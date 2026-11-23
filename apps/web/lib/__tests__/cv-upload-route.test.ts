@@ -3,17 +3,19 @@
  * storage key, so a hand-made multipart filename such as "../victim/resume.pdf"
  * can't make the service-role upload write outside cvs/<userId>/.
  *
- * Each upload is stored under a new name, so the route must also remove the CV
- * it replaces, and only when the old URL points inside cvs/<userId>/.
+ * Each upload gets a random key, so nothing is overwritten any more: the CV a
+ * new upload replaces is deleted once the new URL is saved, and the new object
+ * is deleted again when parsing or saving fails.
  */
-const STORAGE_BASE =
-  "https://storage.example.com/storage/v1/object/public/user-uploads/";
+const MOCK_STORAGE = "https://storage.example.com/storage/v1/object/public/user-uploads/";
 const mockUploadFile = jest.fn();
 const mockDeleteFile = jest.fn();
 jest.mock("@ever-hust/supabase/storage", () => ({
   uploadFile: (...args: unknown[]) => mockUploadFile(...args),
   deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
-  getPublicUrl: (path: string) => `${STORAGE_BASE}${path}`,
+  // Stand-in for the real helper (tested in packages/supabase/src/storage.test.ts).
+  storagePathFromPublicUrl: (url: string | null) =>
+    url?.startsWith(MOCK_STORAGE) ? url.slice(MOCK_STORAGE.length) : null,
 }));
 
 const mockParseCV = jest.fn();
@@ -27,40 +29,41 @@ jest.mock("@ever-hust/cv-parser", () => ({
   SUPPORTED_CV_EXTENSIONS: new Set(["pdf", "docx", "txt"]),
 }));
 
-/**
- * The signed-in user's row: what the route reads and updates. Like Drizzle, the
- * stand-in drops a SET key that is not a users column and refuses to select an
- * undefined column.
- */
-const mockUserRow: Record<string, unknown> = {};
-const mockUsers: Record<string, { column: string }> = {
-  id: { column: "id" },
-  skills: { column: "skills" },
-  cvUrl: { column: "cvUrl" },
-  cvParsedData: { column: "cvParsedData" },
-  updatedAt: { column: "updatedAt" },
+/** user-1's row, read under FOR UPDATE and written by the route's transaction. */
+const mockUserRow: { skills: string[]; cvUrl: string | null } = {
+  skills: [],
+  cvUrl: null,
 };
-const mockUpdate = jest.fn();
+const mockDbCalls: string[] = [];
+let mockSaveFails = false;
 jest.mock("@ever-hust/db", () => ({
   db: {
-    select: (projection: Record<string, { column: string } | undefined>) => ({
-      from: () => ({
-        where: () => ({
-          limit: async () => {
-            const row: Record<string, unknown> = {};
-            for (const [key, col] of Object.entries(projection)) {
-              if (!col) throw new Error(`unknown column in select: ${key}`);
-              row[key] = mockUserRow[col.column];
-            }
-            return [row];
-          },
+    transaction: async <T>(fn: (tx: object) => Promise<T>) =>
+      fn({
+        select: () => ({
+          from: () => ({
+            where: () => ({
+              for: async (strength: string) => {
+                mockDbCalls.push(`select for ${strength}`);
+                return [{ ...mockUserRow }];
+              },
+            }),
+          }),
+        }),
+        update: () => ({
+          set: (values: Record<string, unknown>) => ({
+            where: async () => {
+              mockDbCalls.push(`update ${Object.keys(values).sort().join(",")}`);
+              if (mockSaveFails) throw new Error("connection lost");
+              Object.assign(mockUserRow, values);
+            },
+          }),
         }),
       }),
-    }),
-    update: (...args: unknown[]) => mockUpdate(...args),
   },
-  users: mockUsers,
+  users: { skills: "skills", cvUrl: "cvUrl", id: "id" },
 }));
+jest.mock("drizzle-orm", () => ({ eq: jest.fn() }));
 jest.mock("../get-session-user", () => ({
   requireSessionUser: async () => ({ id: "user-1" }),
 }));
@@ -99,12 +102,7 @@ function resetMocks() {
   mockUploadFile.mockReset();
   mockDeleteFile.mockReset();
   mockParseCV.mockReset();
-  mockUpdate.mockReset();
-  for (const key of Object.keys(mockUserRow)) delete mockUserRow[key];
-  Object.assign(mockUserRow, { skills: [], cvUrl: null });
-  mockUploadFile.mockImplementation(
-    async (path: string) => `${STORAGE_BASE}${path}`,
-  );
+  mockUploadFile.mockImplementation(async (path: string) => `${MOCK_STORAGE}${path}`);
   mockDeleteFile.mockResolvedValue(undefined);
   mockParseCV.mockResolvedValue({
     name: "Jane",
@@ -113,15 +111,10 @@ function resetMocks() {
     education: [],
     rawText: "x",
   });
-  mockUpdate.mockReturnValue({
-    set: (fields: Record<string, unknown>) => ({
-      where: async () => {
-        for (const [key, value] of Object.entries(fields)) {
-          if (key in mockUsers && value !== undefined) mockUserRow[key] = value;
-        }
-      },
-    }),
-  });
+  mockUserRow.skills = [];
+  mockUserRow.cvUrl = null;
+  mockDbCalls.length = 0;
+  mockSaveFails = false;
 }
 
 describe("POST /api/cv/upload storage path", () => {
@@ -169,102 +162,96 @@ describe("POST /api/cv/upload storage path", () => {
   });
 });
 
-describe("POST /api/cv/upload and the CV it replaces", () => {
-  let warn: jest.SpyInstance;
-  let error: jest.SpyInstance;
-
+describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
+  let errorSpy: jest.SpyInstance;
   beforeEach(() => {
     resetMocks();
-    warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
-    error = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
   });
+  afterEach(() => errorSpy.mockRestore());
 
-  afterEach(() => {
-    warn.mockRestore();
-    error.mockRestore();
-  });
+  const newPath = () => String(mockUploadFile.mock.calls[0][0]);
 
-  it("saves the stored CV's URL in users.cv_url", async () => {
+  it("saves the URL in users.cv_url and deletes the CV it replaces", async () => {
+    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
+
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(200);
-    const path = String(mockUploadFile.mock.calls[0][0]);
-    expect(mockUserRow.cvUrl).toBe(`${STORAGE_BASE}${path}`);
-  });
-
-  it("removes the first CV's file when the user uploads a second CV", async () => {
-    const first = await upload("first.pdf");
-    expect(first.status).toBe(200);
-    expect(mockDeleteFile).not.toHaveBeenCalled();
-    const firstPath = String(mockUploadFile.mock.calls[0][0]);
-    expect(mockUserRow.cvUrl).toBe(`${STORAGE_BASE}${firstPath}`);
-
-    const second = await upload("second.pdf");
-
-    expect(second.status).toBe(200);
-    const secondPath = String(mockUploadFile.mock.calls[1][0]);
-    expect(secondPath).not.toBe(firstPath);
+    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}${newPath()}`);
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
-    expect(mockDeleteFile).toHaveBeenCalledWith(firstPath);
-    expect(mockUserRow.cvUrl).toBe(`${STORAGE_BASE}${secondPath}`);
+    expect(mockDeleteFile).toHaveBeenCalledWith("cvs/user-1/old-cv.pdf");
+    // Read under a row lock, written in the same transaction.
+    expect(mockDbCalls).toEqual([
+      "select for update",
+      "update cvParsedData,cvUrl,updatedAt",
+    ]);
   });
 
-  it.each([
-    [
-      "another user's CV",
-      `${STORAGE_BASE}cvs/user-2/0b6f3c9e-5d2a-4c1f-9a7e-2f1d3c4b5a69.pdf`,
-    ],
-    [
-      "another host",
-      "https://evil.example/storage/v1/object/public/user-uploads/cvs/user-1/a.pdf",
-    ],
-    [
-      "another bucket",
-      "https://storage.example.com/storage/v1/object/public/other/cvs/user-1/a.pdf",
-    ],
-    ["a parent segment", `${STORAGE_BASE}cvs/user-1/../user-2/a.pdf`],
-    ["an encoded parent segment", `${STORAGE_BASE}cvs/user-1/%2e%2e`],
-    ["a sub-folder", `${STORAGE_BASE}cvs/user-1/sub/a.pdf`],
-    ["the folder itself", `${STORAGE_BASE}cvs/user-1/`],
-    ["a user id that only starts the same", `${STORAGE_BASE}cvs/user-10/a.pdf`],
-    ["the user's avatar", `${STORAGE_BASE}avatars/user-1.png`],
-    ["a query string", `${STORAGE_BASE}cvs/user-1/a.pdf?x=1`],
-    ["a URL that is not one", "not a url"],
-  ])(
-    "never removes a previous CV URL pointing at %s",
-    async (_label, oldUrl) => {
-      mockUserRow.cvUrl = oldUrl;
+  it("deletes nothing on a first upload", async () => {
+    const res = await upload("resume.pdf");
 
-      const res = await upload("resume.pdf");
+    expect(res.status).toBe(200);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+  });
 
-      expect(res.status).toBe(200);
-      expect(mockDeleteFile).not.toHaveBeenCalled();
-    },
-  );
+  it("never deletes an object outside the user's own folder", async () => {
+    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-2/their-cv.pdf`;
 
-  it("keeps the previous CV when saving the new one fails", async () => {
-    mockUserRow.cvUrl = `${STORAGE_BASE}cvs/user-1/old.pdf`;
-    mockUpdate.mockReturnValue({
-      set: () => ({
-        where: async () => {
-          throw new Error("db down");
-        },
-      }),
-    });
+    await upload("resume.pdf");
+
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+  });
+
+  it("deletes the new object and keeps the current CV when parsing fails", async () => {
+    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
+    mockParseCV.mockRejectedValue(new Error("not a PDF"));
 
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(500);
-    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
+    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}cvs/user-1/old-cv.pdf`);
+    expect(mockDbCalls).toEqual([]);
   });
 
-  it("still answers 200 when removing the previous CV fails", async () => {
-    mockUserRow.cvUrl = `${STORAGE_BASE}cvs/user-1/old.pdf`;
+  it("deletes the new object and keeps the current CV when saving fails", async () => {
+    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
+    mockSaveFails = true;
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(500);
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
+    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}cvs/user-1/old-cv.pdf`);
+  });
+
+  it("answers 200 when deleting the replaced CV fails", async () => {
+    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
     mockDeleteFile.mockRejectedValue(new Error("storage down"));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
 
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(200);
-    expect(mockDeleteFile).toHaveBeenCalledWith("cvs/user-1/old.pdf");
+    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}${newPath()}`);
+    warnSpy.mockRestore();
+  });
+
+  it("merges the CV's skills into the user's skills", async () => {
+    mockUserRow.skills = ["Go"];
+    mockParseCV.mockResolvedValue({
+      name: "Jane",
+      skills: ["Go", "Rust"],
+      experience: [],
+      education: [],
+      rawText: "x",
+    });
+
+    await upload("resume.pdf");
+
+    expect(mockUserRow.skills).toEqual(["Go", "Rust"]);
   });
 });
