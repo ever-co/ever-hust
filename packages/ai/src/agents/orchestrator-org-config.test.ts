@@ -1,5 +1,6 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
 import { createOrchestratorStream } from "./orchestrator";
+import { DEFAULT_MAX_OUTPUT_TOKENS, withFreeModelFallback } from "../credit-fallback";
 
 jest.mock("../credits", () => ({ recordChatUsage: jest.fn(async () => 0) }));
 jest.mock("../prompts", () => ({
@@ -84,6 +85,20 @@ describe("org AI config in chat", () => {
     expect(systemText(model)).toBe("You are Hust.");
     expect(model.doStreamCalls[0]!.temperature).toBeUndefined();
     expect(model.doStreamCalls[0]!.maxOutputTokens).toBeUndefined();
+  });
+
+  it("keeps Hust's output cap on a platform model when the org sets a higher one", async () => {
+    // Platform models are wrapped by withFreeModelFallback (model-router.ts); BYOK models are not.
+    const paid = answering();
+    const result = await createOrchestratorStream({
+      model: withFreeModelFallback(paid, answering()),
+      messages: [{ role: "user", content: "hi" }],
+      userId: "user-1",
+      maxOutputTokens: 200_000,
+    });
+    await result.consumeStream();
+
+    expect(paid.doStreamCalls[0]!.maxOutputTokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
   });
 
   it("ignores a blank org prompt", async () => {

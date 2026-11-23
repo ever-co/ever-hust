@@ -33,9 +33,11 @@ export const FREE_FALLBACK_PROVIDER_ROUTING = {
 } as const;
 
 /**
- * Output cap for platform calls that set none. Without it OpenRouter reserves
- * the model's maximum (65,536 tokens for Sonnet), so a low balance rejects even
- * a one-line answer.
+ * Output cap for platform calls. Without it OpenRouter reserves the model's
+ * maximum (65,536 tokens for Sonnet), so a low balance rejects even a one-line
+ * answer. A caller (an org AI config's max tokens) may lower it, never raise
+ * it: the 402 a bigger reservation gets would send every user to the free
+ * models for the cooldown.
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 8192;
 
@@ -153,10 +155,13 @@ export function withFreeModelFallback(
     model: primary,
     middleware: {
       specificationVersion: "v3",
-      transformParams: async ({ params }) =>
-        params.maxOutputTokens == null
-          ? { ...params, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS }
-          : params,
+      transformParams: async ({ params }) => ({
+        ...params,
+        maxOutputTokens: Math.min(
+          params.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+          DEFAULT_MAX_OUTPUT_TOKENS,
+        ),
+      }),
       wrapGenerate: async ({ doGenerate, params }) => {
         if (Date.now() < creditsExhaustedUntil) {
           markFallback();
