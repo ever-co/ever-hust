@@ -304,6 +304,21 @@ describe("InboxView: back to the conversation list", () => {
     expect(composeOpen.setter).toHaveBeenCalledWith(false);
   });
 
+  it("the reply composer's back button names the thread it goes back to", () => {
+    const selected = seedState(null, THREAD.threadKey);
+    const composeOpen = seedState(false, true);
+    const html = render();
+
+    expect(html).toContain("New message");
+    expect(buttonLabelled("Back to conversations")).toHaveLength(0);
+    const back = buttonLabelled("Back to the conversation");
+    expect(back).toHaveLength(1);
+
+    (back[0]!.onClick as () => void)();
+    expect(composeOpen.setter).toHaveBeenCalledWith(false);
+    expect(selected.setter).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["an open thread", () => seedState(null, THREAD.threadKey)],
     ["the composer", () => seedState(false, true)],

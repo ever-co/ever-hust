@@ -286,7 +286,8 @@ export function InboxView({ account, onDisconnected }: { account: AccountView; o
           {composeOpen ? (
             <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="ghost" onClick={() => setComposeOpen(false)} aria-label="Back to conversations">
+                {/* A reply keeps its thread selected, so this goes back to that thread, not to the list. */}
+                <Button size="sm" variant="ghost" onClick={() => setComposeOpen(false)} aria-label={selected ? "Back to the conversation" : "Back to conversations"}>
                   <ArrowLeft className="h-4 w-4" aria-hidden="true" />
                 </Button>
                 <span className="text-sm font-medium">New message</span>

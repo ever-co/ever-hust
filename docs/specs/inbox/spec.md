@@ -196,7 +196,8 @@ Implementations: `packages/plugins/mail-gmail`, `…/mail-nylas`,
 - **Inbox page:** 3-pane on desktop — thread list (filter by category/job),
   reading pane (rendered HTML, attachments, AI summary + suggested reply chip),
   **TipTap composer**. Mobile: list → thread → composer, with a "Back to
-  conversations" button on the thread and the composer.
+  conversations" button on the thread and on a new message, and a "Back to the
+  conversation" button on a reply.
 - **Job/Application linkage:** each thread shows the linked job card; a thread can
   drive the application status timeline.
 - **Onboarding:** "Set up your jobs inbox" — choose *Connect Gmail/Outlook* or
