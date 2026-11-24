@@ -33,7 +33,11 @@ jest.mock("@ever-hust/db/schema", () => ({
 jest.mock("./migrate-anonymous-user", () => ({
   migrateAnonymousUserData: jest.fn(),
 }));
+jest.mock("@ever-hust/supabase/storage", () => ({
+  deleteUserFiles: jest.fn(),
+}));
 
+import { deleteUserFiles } from "@ever-hust/supabase/storage";
 import { anonymousSelfDeleteGuard } from "./anonymous-self-delete-guard";
 import { migrateAnonymousUserData } from "./migrate-anonymous-user";
 import { auth } from "./index";
@@ -104,6 +108,7 @@ describe("auth config", () => {
       options.plugins?.find((p) => p.id === "anonymous")?.options
         ?.onLinkAccount as OnLinkAccount;
     const migrate = migrateAnonymousUserData as jest.Mock;
+    const deleteFiles = deleteUserFiles as jest.Mock;
     const deleteUser = jest.fn();
     const link = () =>
       onLinkAccount()({
@@ -116,6 +121,7 @@ describe("auth config", () => {
     beforeEach(() => {
       migrate.mockReset();
       deleteUser.mockReset();
+      deleteFiles.mockReset();
       errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     });
     afterEach(() => errorSpy.mockRestore());
@@ -133,12 +139,28 @@ describe("auth config", () => {
       );
     });
 
+    // Nothing references the guest's CVs and avatar once the guest row is gone.
+    it("removes the guest's files from Storage after the guest is deleted", async () => {
+      migrate.mockResolvedValue(undefined);
+      deleteUser.mockResolvedValue(undefined);
+      deleteFiles.mockResolvedValue(undefined);
+
+      await expect(link()).resolves.toBeUndefined();
+
+      expect(deleteFiles).toHaveBeenCalledTimes(1);
+      expect(deleteFiles).toHaveBeenCalledWith("guest-1");
+      expect(deleteUser.mock.invocationCallOrder[0]!).toBeLessThan(
+        deleteFiles.mock.invocationCallOrder[0]!,
+      );
+    });
+
     it("keeps the guest and lets the sign-in through when the move fails", async () => {
       migrate.mockRejectedValue(new Error("connection lost"));
 
       await expect(link()).resolves.toBeUndefined();
 
       expect(deleteUser).not.toHaveBeenCalled();
+      expect(deleteFiles).not.toHaveBeenCalled();
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining("guest-1"),
         "connection lost",

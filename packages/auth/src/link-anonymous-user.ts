@@ -9,6 +9,10 @@
  * chats, saved jobs, applications, alerts and organizations. Hust sets
  * disableDeleteAnonymousUser and deletes the guest here, only once the move
  * has committed.
+ *
+ * The move does not carry the guest's CV (users.cv_url) or avatar (photo_url)
+ * over, so once the guest row is gone nothing references the guest's files in
+ * Storage: they are deleted right after it.
  */
 
 type LinkedUser = { user?: { id?: string; isAnonymous?: boolean | null }; id?: string };
@@ -18,6 +22,8 @@ export type LinkAnonymousUserDeps = {
   migrate: (fromId: string, toId: string) => Promise<void>;
   /** Deletes the guest the way the plugin would (ctx.context.internalAdapter.deleteUser). */
   deleteGuest: (guestId: string) => Promise<void>;
+  /** Deletes the guest's CVs and avatar from Storage (deleteUserFiles). */
+  deleteGuestFiles: (guestId: string) => Promise<void>;
   log?: Pick<Console, "error">;
 };
 
@@ -42,7 +48,7 @@ function pickUser(v: LinkedUser | undefined) {
  */
 export async function linkAnonymousUser(
   { anonymousUser, newUser }: { anonymousUser: unknown; newUser: unknown },
-  { migrate, deleteGuest, log = console }: LinkAnonymousUserDeps,
+  { migrate, deleteGuest, deleteGuestFiles, log = console }: LinkAnonymousUserDeps,
 ): Promise<LinkAnonymousUserResult> {
   const guest = pickUser(anonymousUser as LinkedUser);
   const account = pickUser(newUser as LinkedUser);
@@ -71,6 +77,17 @@ export async function linkAnonymousUser(
       error instanceof Error ? error.message : error,
     );
     return "moved-guest-kept";
+  }
+
+  // deleteUserFiles never throws; the catch keeps this function from throwing
+  // whatever is passed in.
+  try {
+    await deleteGuestFiles(guest.id);
+  } catch (error) {
+    log.error(
+      `[Auth] Deleted guest ${guest.id} but could not delete its files:`,
+      error instanceof Error ? error.message : error,
+    );
   }
   return "moved";
 }
