@@ -16,7 +16,7 @@
     "@ever-hust/db": "workspace:*",
     "@ever-hust/email": "workspace:*",
     "@ever-hust/supabase": "workspace:*",
-    "better-auth": "^1.2.0"
+    "better-auth": "^1.7.7"
   },
   "devDependencies": {
     "@ever-hust/typescript-config": "workspace:*",
