@@ -15,6 +15,7 @@
   "dependencies": {
     "@ever-hust/db": "workspace:*",
     "@ever-hust/email": "workspace:*",
+    "@ever-hust/supabase": "workspace:*",
     "better-auth": "^1.2.0"
   },
   "devDependencies": {

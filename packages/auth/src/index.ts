@@ -3,6 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { anonymous } from "better-auth/plugins";
 import { db } from "@ever-hust/db/client";
 import * as schema from "@ever-hust/db/schema";
+import { deleteUserFiles } from "@ever-hust/supabase/storage";
 import { anonymousSelfDeleteGuard } from "./anonymous-self-delete-guard";
 import { emailGreetingName } from "./email-greeting-name";
 import { linkAnonymousUser } from "./link-anonymous-user";
@@ -180,8 +181,9 @@ export const auth = betterAuth({
   // can use the AI chat immediately, and is prompted to sign up. On sign-up the
   // plugin links the account and linkAnonymousUser moves their work over,
   // organizations included, in one transaction and deletes the guest only once
-  // that has committed. The plugin's own delete is off: it ran even when the
-  // move failed, and every table the guest owns cascades on that delete.
+  // that has committed, then deletes the guest's CVs and avatar from Storage.
+  // The plugin's own delete is off: it ran even when the move failed, and
+  // every table the guest owns cascades on that delete.
   // ---------------------------------------------------------------------------
   plugins: [
     anonymous({
@@ -195,6 +197,7 @@ export const auth = betterAuth({
               migrateAnonymousUserData(db, fromId, toId),
             deleteGuest: (guestId) =>
               ctx.context.internalAdapter.deleteUser(guestId),
+            deleteGuestFiles: (guestId) => deleteUserFiles(guestId),
           },
         );
       },
