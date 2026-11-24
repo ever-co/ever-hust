@@ -13,7 +13,12 @@ jest.mock("./server", () => ({
   }),
 }));
 
-import { uploadFile } from "./storage";
+import {
+  deleteFile,
+  deleteUserFiles,
+  storagePathFromPublicUrl,
+  uploadFile,
+} from "./storage";
 
 const data = Buffer.from("hello world");
 
@@ -102,5 +107,193 @@ describe("uploadFile path guard", () => {
       uploadFile("../user-uploads/x.pdf", data, "application/pdf", "other"),
     ).rejects.toThrow(/Invalid storage path/);
     expect(mockUpload).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Deleting an account must also erase the files the user uploaded: every CV in
+ * cvs/<userId>/ (name, email, phone, work history) and the avatar, whatever its
+ * extension. Storage lists a folder 100 entries at a time, so the folder has to
+ * be read page by page.
+ */
+describe("deleteUserFiles", () => {
+  const mockList = jest.fn();
+  const mockRemove = jest.fn();
+  let warn: jest.SpyInstance;
+
+  /** A CV folder with more files than one list page holds. */
+  const cvNames = Array.from(
+    { length: 150 },
+    (_, i) => `${String(i).padStart(3, "0")}.pdf`,
+  );
+
+  /** Serve `names` the way Storage does: one page per call, by offset and limit. */
+  function serveFolder(names: string[]) {
+    mockList.mockImplementation(
+      async (_path: string, options: { limit: number; offset: number }) => ({
+        data: names
+          .slice(options.offset, options.offset + options.limit)
+          .map((name) => ({ name, id: `id-${name}` })),
+        error: null,
+      }),
+    );
+  }
+
+  /** Every path passed to remove(), across all calls. */
+  function removedPaths(): string[] {
+    return mockRemove.mock.calls.flatMap((call) => call[0] as string[]);
+  }
+
+  beforeEach(() => {
+    mockList.mockReset();
+    mockRemove.mockReset();
+    mockFrom.mockReset();
+    mockRemove.mockResolvedValue({ data: [], error: null });
+    mockFrom.mockReturnValue({ list: mockList, remove: mockRemove });
+    warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it("lists cvs/<userId> across two pages and removes every CV plus the three avatar paths", async () => {
+    serveFolder(cvNames);
+
+    await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
+
+    expect(mockFrom).toHaveBeenCalledWith("user-uploads");
+    // Two pages: the first is full, the second is not, so listing stops there.
+    expect(mockList).toHaveBeenCalledTimes(2);
+    expect(mockList.mock.calls.map((call) => call[0])).toEqual([
+      "cvs/u1",
+      "cvs/u1",
+    ]);
+    expect(mockList.mock.calls.map((call) => call[1].offset)).toEqual([0, 100]);
+    expect(removedPaths().sort()).toEqual(
+      [
+        ...cvNames.map((name) => `cvs/u1/${name}`),
+        "avatars/u1.jpg",
+        "avatars/u1.png",
+        "avatars/u1.webp",
+      ].sort(),
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("removes the avatar paths when the user has no CV", async () => {
+    serveFolder([]);
+
+    await deleteUserFiles("u1");
+
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(removedPaths().sort()).toEqual([
+      "avatars/u1.jpg",
+      "avatars/u1.png",
+      "avatars/u1.webp",
+    ]);
+  });
+
+  it("logs a failed listing, still removes the avatar paths and does not throw", async () => {
+    mockList.mockResolvedValue({ data: null, error: { message: "list down" } });
+
+    await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
+
+    expect(removedPaths()).toEqual(
+      expect.arrayContaining([
+        "avatars/u1.jpg",
+        "avatars/u1.png",
+        "avatars/u1.webp",
+      ]),
+    );
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("logs a failed remove and does not throw", async () => {
+    serveFolder(["a.pdf"]);
+    mockRemove.mockResolvedValue({
+      data: null,
+      error: { message: "remove down" },
+    });
+
+    await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("logs and does not throw when Storage is not reachable at all", async () => {
+    mockFrom.mockImplementation(() => {
+      throw new Error("Missing Supabase server environment variables");
+    });
+
+    await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an empty id", ""],
+    ["a parent segment", ".."],
+    ["a nested path", "u1/../u2"],
+    ["a slash", "u1/u2"],
+    ["a backslash", "u1\\..\\u2"],
+    ["a control character", "u1\t"],
+  ])("never calls Storage for a user id with %s", async (_label, userId) => {
+    await expect(deleteUserFiles(userId)).resolves.toBeUndefined();
+
+    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockRemove).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
+describe("storagePathFromPublicUrl", () => {
+  const base =
+    "https://abc.supabase.co/storage/v1/object/public/user-uploads/";
+
+  it.each([
+    ["a CV URL", `${base}cvs/user-1/0b6f3c9e.pdf`, "cvs/user-1/0b6f3c9e.pdf"],
+    ["an encoded file name", `${base}cvs/user-1/My%20Resume.pdf`, "cvs/user-1/My Resume.pdf"],
+    ["a URL with a query string", `${base}cvs/user-1/cv.pdf?download=1`, "cvs/user-1/cv.pdf"],
+  ])("returns the path of %s", (_label, url, path) => {
+    expect(storagePathFromPublicUrl(url)).toBe(path);
+  });
+
+  it.each([
+    ["null", null],
+    ["an empty string", ""],
+    ["not a URL", "cvs/user-1/cv.pdf"],
+    ["another bucket", "https://abc.supabase.co/storage/v1/object/public/other/cvs/user-1/cv.pdf"],
+    ["a signed URL", "https://abc.supabase.co/storage/v1/object/sign/user-uploads/cvs/user-1/cv.pdf"],
+    ["the bucket root", base],
+    ["a parent segment", `${base}cvs/user-1/../user-2/cv.pdf`],
+    ["an encoded parent segment", `${base}cvs/user-1/%2e%2e/user-2/cv.pdf`],
+    ["an encoded backslash", `${base}cvs/user-1/..%5Cuser-2%5Ccv.pdf`],
+    ["broken percent-encoding", `${base}cvs/user-1/%E0%A4%A.pdf`],
+  ])("returns null for %s", (_label, url) => {
+    expect(storagePathFromPublicUrl(url)).toBeNull();
+  });
+});
+
+describe("deleteFile path guard", () => {
+  const mockRemove = jest.fn();
+  beforeEach(() => {
+    mockFrom.mockReset();
+    mockRemove.mockReset();
+    mockRemove.mockResolvedValue({ error: null });
+    mockFrom.mockReturnValue({ remove: mockRemove });
+  });
+
+  it("deletes a safe path", async () => {
+    await deleteFile("cvs/user-1/cv.pdf");
+    expect(mockRemove).toHaveBeenCalledWith(["cvs/user-1/cv.pdf"]);
+  });
+
+  it("throws for a parent segment and never calls Storage", async () => {
+    await expect(deleteFile("cvs/user-1/../user-2/cv.pdf")).rejects.toThrow(
+      /Invalid storage path/,
+    );
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 });
