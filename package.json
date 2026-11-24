@@ -21,7 +21,7 @@
     "@ever-hust/db": "workspace:*",
     "@playwright/test": "^1.60.0",
     "@types/jest": "^30.0.0",
-    "drizzle-orm": "^0.45.1",
+    "drizzle-orm": "^0.45.4",
     "jest": "^30.2.0",
     "prettier": "^3.7.4",
     "ts-jest": "^29.4.6",
@@ -30,6 +30,6 @@
   },
   "packageManager": "pnpm@10.26.2",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   }
 }

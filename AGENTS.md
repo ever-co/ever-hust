@@ -11,11 +11,11 @@ This file provides guidance to all AI coding assistants (GitHub Copilot, Google 
 | --------------------- | ------------------------------------ |
 | **Package Manager**   | pnpm 9 (NOT npm, NOT yarn)           |
 | **Dev Server**        | `pnpm dev` → http://localhost:8443   |
-| **Framework**         | Next.js 16.1 (App Router, Turbopack) |
+| **Framework**         | Next.js 16.4 (App Router, Turbopack) |
 | **Monorepo**          | Turborepo with pnpm workspaces       |
 | **Package Namespace** | `@ever-hust/*`                       |
 | **Workspace Config**  | `pnpm-workspace.yaml`                |
-| **Node Version**      | ≥24                                  |
+| **Node Version**      | ≥26                                  |
 
 ## Commands
 
