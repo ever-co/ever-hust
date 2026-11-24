@@ -130,6 +130,11 @@ export async function POST(req: Request) {
         .where(eq(users.id, userId))
         .for("update");
 
+      // The account was deleted while this upload ran, so its files may
+      // already be gone: fail, and the catch below deletes the new object
+      // instead of leaving a CV behind that no account references.
+      if (!current) throw new Error("User no longer exists");
+
       // users.cv_url (cvUrl): the route used to set a "cvFileUrl" key, which
       // is not a column, so Drizzle dropped it and the URL was never stored.
       const updateFields: Partial<typeof users.$inferInsert> = {

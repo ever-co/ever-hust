@@ -36,6 +36,8 @@ const mockUserRow: { skills: string[]; cvUrl: string | null } = {
 };
 const mockDbCalls: string[] = [];
 let mockSaveFails = false;
+/** The account was deleted while the upload ran: the locked read finds no row. */
+let mockUserGone = false;
 jest.mock("@ever-hust/db", () => ({
   db: {
     transaction: async <T>(fn: (tx: object) => Promise<T>) =>
@@ -45,7 +47,7 @@ jest.mock("@ever-hust/db", () => ({
             where: () => ({
               for: async (strength: string) => {
                 mockDbCalls.push(`select for ${strength}`);
-                return [{ ...mockUserRow }];
+                return mockUserGone ? [] : [{ ...mockUserRow }];
               },
             }),
           }),
@@ -115,6 +117,7 @@ function resetMocks() {
   mockUserRow.cvUrl = null;
   mockDbCalls.length = 0;
   mockSaveFails = false;
+  mockUserGone = false;
 }
 
 describe("POST /api/cv/upload storage path", () => {
@@ -226,6 +229,17 @@ describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
     expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
     expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}cvs/user-1/old-cv.pdf`);
+  });
+
+  it("deletes the new object when the account was deleted while the upload ran", async () => {
+    mockUserGone = true;
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(500);
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
+    expect(mockDbCalls).toEqual(["select for update"]);
   });
 
   it("answers 200 when deleting the replaced CV fails", async () => {
