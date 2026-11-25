@@ -37,7 +37,7 @@
     "@novu/api": "^3.11.0",
     "@openrouter/ai-sdk-provider": "^2.2.3",
     "@opentelemetry/api": "^1.9.0",
-    "@opentelemetry/sdk-node": "^0.212.0",
+    "@opentelemetry/sdk-node": "^0.217.0",
     "@radix-ui/react-avatar": "^1.1.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dismissable-layer": "^1.1.11",
