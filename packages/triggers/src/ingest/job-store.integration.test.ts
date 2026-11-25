@@ -22,6 +22,8 @@ import { runJobsSync, type UpstreamStream } from "./run-sync";
  *
  * The database must be a throwaway one whose name ends in `_it` or `_test` (the test TRUNCATEs
  * `jobs`); the schema must already be pushed (`DATABASE_URL=… pnpm db:push`). Skipped when unset.
+ * Connect as a superuser of PostgreSQL 16 or later (CI's `postgres:16` service): the refresh test
+ * issues `CHECKPOINT` and reads WAL records through the `pg_walinspect` extension, which it creates.
  */
 
 // `postgres` is CommonJS (`export =`); jest runs without esModuleInterop, tsc with it.
@@ -44,8 +46,9 @@ const ENV: SyncEnvConfig = {
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 
 /**
- * Jest timeout of the tests that load or sync hundreds to tens of thousands of rows: the default
- * 5 s is too little on a slow CI runner (the spec D29 test ran out of it there).
+ * Jest timeout of the tests that load or sync hundreds to tens of thousands of rows, or force a
+ * checkpoint (it syncs every file written since the last one): the default 5 s is too little on a
+ * slow CI runner (the spec D29 test ran out of it there).
  */
 const HEAVY_TEST_TIMEOUT_MS = 120_000;
 
@@ -103,8 +106,32 @@ suite("job store against Postgres (opt-in)", () => {
           SELECT pg_relation_size(reltoastrelid)::text AS b FROM pg_class WHERE relname = 'jobs' AND relkind = 'r'`
       )[0]!.b,
     );
-  const walBytesSince = async (lsn: string) =>
-    Number((await client<Array<{ d: string }>>`SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), ${lsn}::pg_lsn)::text AS d`)[0]!.d);
+  /**
+   * WAL written since `lsn` to the pages of `jobs`, its TOAST table and their indexes, without
+   * full-page images. Not `pg_current_wal_insert_lsn() - lsn`: that counts every backend's WAL in
+   * the cluster (autovacuum, autoanalyze), and once a checkpoint starts, the first change to each
+   * page also writes an image of it (T-2760: CI read 51 400 bytes for a refresh that writes ~200).
+   */
+  const jobsWalBytesSince = async (lsn: string) =>
+    Number(
+      (
+        await client<Array<{ b: string }>>`
+          WITH t AS MATERIALIZED (
+            SELECT oid AS heap, reltoastrelid AS toast FROM pg_class WHERE oid = 'jobs'::regclass
+          ), rel AS MATERIALIZED (
+            SELECT (SELECT oid::text FROM pg_database WHERE datname = current_database()) AS db,
+              array_agg(pg_relation_filenode(c.oid)::text) AS nodes
+            FROM pg_class c
+            WHERE c.oid IN (SELECT heap FROM t UNION ALL SELECT toast FROM t UNION ALL
+              SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT heap FROM t UNION ALL SELECT toast FROM t))
+          )
+          SELECT coalesce(sum(w.record_length - w.fpi_length), 0)::text AS b
+          FROM pg_get_wal_records_info(${lsn}::pg_lsn, pg_current_wal_flush_lsn()) AS w, rel
+          WHERE EXISTS (
+            SELECT 1 FROM regexp_matches(w.block_ref, 'rel [0-9]+/([0-9]+)/([0-9]+)', 'g') AS m
+            WHERE m[1] = rel.db AND m[2] = ANY (rel.nodes))`
+      )[0]!.b,
+    );
   const walNow = async () => (await client<Array<{ l: string }>>`SELECT pg_current_wal_insert_lsn()::text AS l`)[0]!.l;
 
   const rowVersions = async () =>
@@ -371,13 +398,20 @@ suite("job store against Postgres (opt-in)", () => {
     await sync([job("big", { description: big })]);
     const created = await client`SELECT created_at::text AS c FROM jobs WHERE external_id = 'big'`;
     await client`UPDATE jobs SET updated_at = (now() AT TIME ZONE 'UTC') - interval '30 days' WHERE external_id = 'big'`;
+    await client`CREATE EXTENSION IF NOT EXISTS pg_walinspect`;
 
     const toast0 = await toastBytes();
     const wal0 = await walNow();
+    // The window as CI can get it (T-2760): a checkpoint starts, so the first change to each page
+    // writes a full-page image, and another backend writes WAL of its own (autovacuum and
+    // autoanalyze run on this database as each test's TRUNCATE churns the catalog). The 64 KB
+    // message stands in for that WAL; it touches no page of `jobs`.
+    await client`CHECKPOINT`;
+    await client`SELECT pg_logical_emit_message(false, 'job-store-it', repeat('x', 64 * 1024))`;
     const refreshed = await sync([job("big", { description: big })]);
     expect(refreshed).toMatchObject({ ok: true, updated: 1, unchanged: 0 });
     expect(await toastBytes()).toBe(toast0); // no new TOAST chunk
-    expect(await walBytesSince(wal0)).toBeLessThan(24 * 1024); // a heap tuple (+ at most a page image), not 64 KB
+    expect(await jobsWalBytesSince(wal0)).toBeLessThan(24 * 1024); // a locked, updated heap tuple (~200 B), not 64 KB
     const after = await client`
       SELECT created_at::text AS c, updated_at > (now() AT TIME ZONE 'UTC') - interval '1 day' AS fresh, description = ${big} AS same
       FROM jobs WHERE external_id = 'big'`;
@@ -388,8 +422,8 @@ suite("job store against Postgres (opt-in)", () => {
     const wal1 = await walNow();
     expect(await sync([job("big", { description: randomBytes(48 * 1024).toString("base64") })])).toMatchObject({ updated: 1 });
     expect(await toastBytes()).toBeGreaterThan(toast0 + 48 * 1024);
-    expect(await walBytesSince(wal1)).toBeGreaterThan(48 * 1024);
-  });
+    expect(await jobsWalBytesSince(wal1)).toBeGreaterThan(48 * 1024);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("bounds every read with a statement timeout: a read waiting on a lock fails instead of hanging (spec D25)", async () => {
     await sync([job("locked")]);
