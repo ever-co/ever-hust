@@ -3,13 +3,13 @@
 This file provides guidance to all AI coding assistants (GitHub Copilot, Google Gemini, Cursor, Windsurf, Claude Code, etc.) when working with this repository.
 
 > [!CAUTION]
-> **This project uses pnpm exclusively.** Do NOT use `npm` or `yarn` — they will fail to resolve workspace dependencies. The root `package.json` specifies `"packageManager": "pnpm@9.15.0"` and workspaces are defined in `pnpm-workspace.yaml`.
+> **This project uses pnpm exclusively.** Do NOT use `npm` or `yarn` — they will fail to resolve workspace dependencies. The root `package.json` pins the exact pnpm release in its `"packageManager"` field (pnpm 10), and workspaces are defined in `pnpm-workspace.yaml`.
 
 ## Quick Reference
 
 | Item                  | Value                                |
 | --------------------- | ------------------------------------ |
-| **Package Manager**   | pnpm 9 (NOT npm, NOT yarn)           |
+| **Package Manager**   | pnpm 10 (NOT npm, NOT yarn)          |
 | **Dev Server**        | `pnpm dev` → http://localhost:8443   |
 | **Framework**         | Next.js 16.4 (App Router, Turbopack) |
 | **Monorepo**          | Turborepo with pnpm workspaces       |
