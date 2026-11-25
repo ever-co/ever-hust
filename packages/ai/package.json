@@ -38,7 +38,7 @@
     "@upstash/redis": "^1.36.2",
     "ai": "^6.0.86",
     "drizzle-orm": "^0.45.4",
-    "zod": "^3.24.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@ever-hust/typescript-config": "workspace:*",
