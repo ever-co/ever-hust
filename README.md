@@ -86,7 +86,7 @@ The candidate journey, end to end: **find → evaluate → tailor → apply → 
 
 | Layer               | Technology                                                   |
 | ------------------- | ------------------------------------------------------------ |
-| **Framework**       | Next.js 16.1 (App Router, Turbopack, Server Components)      |
+| **Framework**       | Next.js 16.4 (App Router, Turbopack, Server Components)      |
 | **Styling**         | Tailwind CSS 4.1 + ShadCN UI                                 |
 | **Build**           | Turborepo monorepo + pnpm                                    |
 | **Auth**            | BetterAuth v1 (LinkedIn OAuth)                               |
@@ -100,7 +100,7 @@ The candidate journey, end to end: **find → evaluate → tailor → apply → 
 | **Testing**         | Jest (1240 unit tests) + Playwright (E2E)                    |
 | **Deployment**      | Vercel                                                       |
 
-**Requirements:** Node.js 24+ · pnpm 10+ · a Supabase project · a LinkedIn Developer App · a Stripe account · an AI provider key (OpenRouter or Anthropic).
+**Requirements:** Node.js 26+ · pnpm 10+ · a Supabase project · a LinkedIn Developer App · a Stripe account · an AI provider key (OpenRouter or Anthropic).
 
 ## 🏗️ Architecture
 

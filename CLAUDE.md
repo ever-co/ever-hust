@@ -60,7 +60,7 @@ ANALYZE=true pnpm build   # Generate bundle analysis report
 
 ## Tech Stack
 
-- **Next.js 16.1** (App Router, React 19, Server Components, Turbopack)
+- **Next.js 16.4** (App Router, React 19, Server Components, Turbopack)
 - **Tailwind CSS 4.1** + **ShadCN UI** (components in `packages/ui/`)
 - **Turborepo** monorepo with **pnpm 9** workspaces
 - **BetterAuth v1** (LinkedIn OAuth, session cookies)
@@ -185,6 +185,7 @@ Located in `apps/web/hooks/`. Key hooks:
 ### Testing
 
 - **Jest**: 1120 unit tests across 35 suites, living alongside source files as `*.test.ts`. Projects configured for: `ai`, `stripe`, `cv-parser`, `jobs-api`, `db`, `utils`, `email`, `triggers`, `supabase`, `web-lib`. Uses `ts-jest` with `isolatedModules: true` to avoid OOM from complex AI SDK/Zod generics. Key test files include `model-router.test.ts`, `prompts.test.ts`, `rate-limit.test.ts`, `tool-schemas.test.ts`, `crypto.test.ts`, `api-client.test.ts`, `api-response.test.ts`, `api-schemas.test.ts`, `subscription-gate.test.ts`, `referral-utils.test.ts`, `format-date.test.ts`, `org-config.test.ts`, `webhook-idempotency.test.ts`, `orchestrator.test.ts`, `constants.test.ts`, `env.test.ts`, `startup-checks.test.ts`, `safe-url.test.ts`, `salary-insights.test.ts`, `resume-builder.test.ts`, `resume-helpers.test.ts`, `webhook.test.ts`, `checkout.test.ts`, `portal.test.ts`, `plans.test.ts`, `client.test.ts`, `types.test.ts`, `guidance-topics.test.ts`, `db-helpers.test.ts`, `map-job.test.ts`, `helpers.test.ts`.
+- **Dependency bumps**: `apps/web/lib/__tests__/toolchain-versions.test.ts` fails when a Node bump misses a Dockerfile stage, a workflow, an `engines.node` or an `@types/node`, or when an `@next/*` package is off the exact `next` pin. `packages/auth/src/better-auth-contract.test.ts` builds a real better-auth instance on the Drizzle schema (the adapter's own schema check, the guest-delete guard, every field better-auth writes), and `apps/web/lib/__tests__/mail-smtp-sink.test.ts` runs `lib/mail.ts` with the real nodemailer against a local SMTP sink. A better-auth or nodemailer bump must pass both.
 - **Playwright**: 175 E2E tests across 8 spec files in `tests/e2e/`. Specs for: auth, landing, chat, jobs, profile, subscription. Runs against `http://localhost:8443`.
 
 ### UI Package Pattern

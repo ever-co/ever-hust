@@ -77,7 +77,7 @@ slot). A deployment can make rollouts wait for it with a `preStop` hook, plus a
 sh -c 'i=0; while ls /tmp/hust-jobs-sync-inflight-* >/dev/null 2>&1 && [ "$i" -lt 3540 ]; do sleep 5; i=$((i+5)); done'
 ```
 
-The runtime image (`node:24-alpine`, `.deploy/web/Dockerfile`) has busybox `sh`, `ls` and `sleep`.
+The runtime image (`node:26.13.1-alpine`, `.deploy/web/Dockerfile`) has busybox `sh`, `ls` and `sleep`.
 
 ## Activating stage (one-time)
 
