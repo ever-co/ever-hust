@@ -3,6 +3,10 @@
  * the guest right after onLinkAccount, even when moving the guest's work had failed, and every
  * table the guest owns cascades on that delete. Now the guest is deleted here, only after the
  * move has committed; a failed move keeps the guest with all of its data.
+ *
+ * Deleting the guest row left the guest's CVs (cvs/<guestId>/) and avatar in Storage with working
+ * public URLs. The move does not carry users.cv_url or photo_url over to the account, so nothing
+ * references those files once the guest is gone: they are deleted right after the guest row.
  */
 import { linkAnonymousUser } from "./link-anonymous-user";
 
@@ -17,12 +21,15 @@ function deps() {
   const deleteGuest = jest.fn(async (id: string) => {
     calls.push(`delete ${id}`);
   });
+  const deleteGuestFiles = jest.fn(async (id: string) => {
+    calls.push(`delete files ${id}`);
+  });
   const log = { error: jest.fn() };
-  return { calls, migrate, deleteGuest, log };
+  return { calls, migrate, deleteGuest, deleteGuestFiles, log };
 }
 
 describe("linkAnonymousUser", () => {
-  it("moves the guest's work, then deletes the guest", async () => {
+  it("moves the guest's work, then deletes the guest and then the guest's files", async () => {
     const d = deps();
 
     const result = await linkAnonymousUser(
@@ -31,8 +38,36 @@ describe("linkAnonymousUser", () => {
     );
 
     expect(result).toBe("moved");
-    expect(d.calls).toEqual(["migrate guest-1 -> user-new", "delete guest-1"]);
+    expect(d.calls).toEqual([
+      "migrate guest-1 -> user-new",
+      "delete guest-1",
+      "delete files guest-1",
+    ]);
     expect(d.log.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps the guest's files when the guest row could not be deleted", async () => {
+    const d = deps();
+    d.deleteGuest.mockRejectedValueOnce(new Error("timeout"));
+
+    await linkAnonymousUser({ anonymousUser: guest, newUser: account }, d);
+
+    // The guest row still points at its CV and avatar.
+    expect(d.deleteGuestFiles).not.toHaveBeenCalled();
+  });
+
+  it("never throws, so the sign-in goes through, when deleting the guest's files fails", async () => {
+    const d = deps();
+    d.deleteGuestFiles.mockRejectedValueOnce(new Error("storage down"));
+
+    await expect(
+      linkAnonymousUser({ anonymousUser: guest, newUser: account }, d),
+    ).resolves.toBe("moved");
+    expect(d.deleteGuestFiles).toHaveBeenCalledWith("guest-1");
+    expect(d.log.error).toHaveBeenCalledWith(
+      expect.stringContaining("guest-1"),
+      "storage down",
+    );
   });
 
   it("keeps the guest, and everything it owns, when the move fails", async () => {
@@ -46,6 +81,7 @@ describe("linkAnonymousUser", () => {
 
     expect(result).toBe("failed-guest-kept");
     expect(d.deleteGuest).not.toHaveBeenCalled();
+    expect(d.deleteGuestFiles).not.toHaveBeenCalled();
     // Both ids are logged so the move can be run again.
     expect(d.log.error).toHaveBeenCalledWith(
       expect.stringMatching(/guest-1.*user-new/),
@@ -71,7 +107,11 @@ describe("linkAnonymousUser", () => {
       d,
     );
 
-    expect(d.calls).toEqual(["migrate guest-1 -> user-new", "delete guest-1"]);
+    expect(d.calls).toEqual([
+      "migrate guest-1 -> user-new",
+      "delete guest-1",
+      "delete files guest-1",
+    ]);
   });
 
   it.each([
