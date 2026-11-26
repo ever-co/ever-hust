@@ -15,6 +15,7 @@ jest.mock("@ever-hust/supabase/storage", () => {
   const actual = jest.requireActual("@ever-hust/supabase/storage");
   return {
     cvStorageObject: actual.cvStorageObject,
+    StorageObjectNotFoundError: actual.StorageObjectNotFoundError,
     downloadFile: (...args: unknown[]) => mockDownloadFile(...args),
   };
 });
@@ -52,6 +53,7 @@ jest.mock("../get-session-user", () => ({
 jest.mock("../rate-limit", () => ({ applyRateLimit: () => null }));
 
 import { GET } from "../../app/api/cv/file/route";
+import { StorageObjectNotFoundError } from "@ever-hust/supabase/storage";
 
 const PDF = "%PDF-1.4 the owner's CV";
 
@@ -152,6 +154,18 @@ describe("GET /api/cv/file", () => {
 
     expect(res.status).toBe(503);
     expect(res.headers.get("Cache-Control")).toMatch(/no-store/);
+  });
+
+  it("answers 404, not a retry message, when the CV's object is gone", async () => {
+    mockCvUrl = "user-1/0b6f.pdf";
+    mockDownloadFile.mockRejectedValue(new StorageObjectNotFoundError());
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await GET();
+
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toMatch(/upload it again/);
+    warnSpy.mockRestore();
   });
 
   it("answers 500 when the database read fails", async () => {

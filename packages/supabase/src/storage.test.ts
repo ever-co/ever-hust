@@ -18,6 +18,7 @@ import {
   deleteFile,
   deleteUserFiles,
   downloadFile,
+  StorageObjectNotFoundError,
   storagePathFromPublicUrl,
   uploadFile,
   uploadPrivateFile,
@@ -362,15 +363,58 @@ describe("downloadFile", () => {
     expect(mockFrom).toHaveBeenCalledWith("user-uploads");
   });
 
-  it("throws when Storage does not return the file", async () => {
+  it("throws a plain error when Storage fails", async () => {
     mockDownload.mockResolvedValue({
       data: null,
-      error: { message: "Object not found" },
+      error: { message: "fetch failed" },
     });
 
-    await expect(downloadFile("user-1/x.pdf")).rejects.toThrow(
-      "Storage download failed: Object not found",
+    const error = await downloadFile("user-1/x.pdf").catch((err: unknown) => err);
+
+    expect(error).not.toBeInstanceOf(StorageObjectNotFoundError);
+    expect((error as Error).message).toBe("Storage download failed: fetch failed");
+  });
+
+  it("throws StorageObjectNotFoundError for a missing object (HTTP 400, body statusCode 404)", async () => {
+    // What storage-js returns for a failed download: the unread response.
+    const response = new Response(
+      JSON.stringify({ statusCode: "404", error: "not_found", message: "Object not found" }),
+      { status: 400, headers: { "content-type": "application/json" } },
     );
+    mockDownload.mockResolvedValue({
+      data: null,
+      error: { name: "StorageUnknownError", message: "Bad Request", originalError: response },
+    });
+
+    await expect(downloadFile("user-1/x.pdf")).rejects.toBeInstanceOf(
+      StorageObjectNotFoundError,
+    );
+  });
+
+  it("throws StorageObjectNotFoundError for an API error with status 404", async () => {
+    mockDownload.mockResolvedValue({
+      data: null,
+      error: { name: "StorageApiError", message: "Object not found", status: 404 },
+    });
+
+    await expect(downloadFile("user-1/x.pdf")).rejects.toBeInstanceOf(
+      StorageObjectNotFoundError,
+    );
+  });
+
+  it("keeps another 400 a plain error", async () => {
+    const response = new Response(
+      JSON.stringify({ statusCode: "403", error: "Unauthorized", message: "invalid signature" }),
+      { status: 400 },
+    );
+    mockDownload.mockResolvedValue({
+      data: null,
+      error: { name: "StorageUnknownError", message: "Bad Request", originalError: response },
+    });
+
+    const error = await downloadFile("user-1/x.pdf").catch((err: unknown) => err);
+
+    expect(error).not.toBeInstanceOf(StorageObjectNotFoundError);
   });
 
   it("refuses an unsafe path before calling Storage", async () => {

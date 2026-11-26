@@ -204,12 +204,25 @@ export async function POST(req: Request) {
       return current.cvUrl ?? null;
     });
   } catch (error) {
-    // The new object is not referenced by the user row: delete it.
-    await removeCvObject(stored);
     if (error instanceof UserGoneError) {
+      // No row references the new object: delete it.
+      await removeCvObject(stored);
       return apiError("Your account no longer exists.", 404);
     }
     console.error("[cv/upload] Saving the CV failed:", errorMessage(error));
+
+    // The commit may have reached the database although its reply did not
+    // (a dropped connection, a timeout). Delete the new object only once the
+    // row is known not to point at it. An object kept here sits in the user's
+    // own private folder, which deleteUserFiles empties with the account.
+    const saved = await readCvValue(userId);
+    if (saved.known && saved.value === stored.path) {
+      console.warn("[cv/upload] The CV was saved although the save reported an error");
+      // The replaced CV is not known here, so it stays behind; deleteUserFiles
+      // removes it with the account.
+      return uploadSucceeded(parsed);
+    }
+    if (saved.known) await removeCvObject(stored);
     return apiError(SAVE_FAILED_MESSAGE, 500);
   }
 
@@ -224,6 +237,11 @@ export async function POST(req: Request) {
     await removeCvObject(previous);
   }
 
+  return uploadSucceeded(parsed);
+}
+
+/** The 200 answer to an upload: what was found in the CV, and where to fetch it. */
+function uploadSucceeded(parsed: ParsedCV) {
   return apiSuccess({
     parsed: {
       name: parsed.name,
@@ -238,4 +256,24 @@ export async function POST(req: Request) {
     // Only the owner can fetch it there; there is no public URL.
     fileUrl: CV_FILE_ROUTE,
   });
+}
+
+/**
+ * The user's users.cv_url as the database has it now; `known: false` when it
+ * cannot be read (the database is down too).
+ */
+async function readCvValue(
+  userId: string,
+): Promise<{ known: true; value: string | null } | { known: false }> {
+  try {
+    const [row] = await db
+      .select({ cvUrl: users.cvUrl })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    return { known: true, value: row?.cvUrl ?? null };
+  } catch (error) {
+    console.error("[cv/upload] Re-reading the CV path failed:", errorMessage(error));
+    return { known: false };
+  }
 }

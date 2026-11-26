@@ -96,32 +96,70 @@ function reason(error: unknown): string {
  * route that imported this package failed to load ("DOMMatrix is not defined").
  *
  * It is imported here, on first use, so loading this module (and the routes
- * that import it) never evaluates PDF.js. A failed import is a server fault and
- * is thrown as is; bytes PDF.js cannot read throw {@link CvUnreadableError}.
+ * that import it) never evaluates PDF.js.
+ *
+ * Only the errors PDF.js raises for the file itself become
+ * {@link CvUnreadableError} (see {@link isPdfFileError}). PDF.js is loaded
+ * first, outside that check: unpdf loads it lazily inside getDocumentProxy, so a
+ * PDF.js that fails to load (a missing chunk, a missing global) would otherwise
+ * be reported as a broken upload. That, and any other error, is thrown as is,
+ * a server fault.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
-  const { extractText, getDocumentProxy } = await import("unpdf");
+  const { extractText, getDocumentProxy, getResolvedPDFJS } = await import(
+    "unpdf"
+  );
+  await getResolvedPDFJS();
+
   let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
   try {
     // A copy: PDF.js may take over (detach) the bytes it is given.
     pdf = await getDocumentProxy(new Uint8Array(buffer));
   } catch (error) {
-    throw new CvUnreadableError(`Unreadable PDF: ${reason(error)}`, {
-      cause: error,
-    });
+    throw asPdfFileError(error);
   }
   try {
     const { text } = await extractText(pdf, { mergePages: true });
     return text;
   } catch (error) {
-    throw new CvUnreadableError(`Unreadable PDF: ${reason(error)}`, {
-      cause: error,
-    });
+    throw asPdfFileError(error);
   } finally {
     // PDF.js 5 has no PDFDocumentProxy.destroy(): the loading task owns the
     // document and its worker, and destroying it frees both.
     await pdf.loadingTask.destroy().catch(() => {});
   }
+}
+
+/**
+ * The names of the errors PDF.js raises for the bytes it was given: not a PDF
+ * or a broken structure, encrypted, malformed content. An error the PDF worker
+ * raises with any other name reaches the caller as UnknownErrorException; it is
+ * raised while parsing the file, so it counts as the file's too.
+ */
+const PDF_FILE_ERRORS = new Set([
+  "InvalidPDFException",
+  "MissingPDFException",
+  "PasswordException",
+  "FormatError",
+  "UnknownErrorException",
+]);
+
+/** True for an error PDF.js raised about the file (by name: PDF.js may run in another realm). */
+function isPdfFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    typeof error.name === "string" &&
+    PDF_FILE_ERRORS.has(error.name)
+  );
+}
+
+/** A PDF.js error about the file as {@link CvUnreadableError}; any other error unchanged. */
+function asPdfFileError(error: unknown): unknown {
+  return isPdfFileError(error)
+    ? new CvUnreadableError(`Unreadable PDF: ${reason(error)}`, { cause: error })
+    : error;
 }
 
 /**

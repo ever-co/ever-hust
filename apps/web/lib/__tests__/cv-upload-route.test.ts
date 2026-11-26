@@ -56,11 +56,30 @@ const mockUserRow: { skills: string[]; cvUrl: string | null } = {
   cvUrl: null,
 };
 const mockDbCalls: string[] = [];
-let mockSaveFails = false;
+/**
+ * How the transaction's update fails: "no" succeeds; "before-commit" fails
+ * with the row unchanged; "after-commit" writes the row and then fails, as when
+ * the commit reached the database but its reply was lost.
+ */
+let mockSaveFails: "no" | "before-commit" | "after-commit" = "no";
+/** The re-read of users.cv_url after a failed save fails too. */
+let mockRereadFails = false;
 /** The account was deleted while the upload ran: the locked read finds no row. */
 let mockUserGone = false;
 jest.mock("@ever-hust/db", () => ({
   db: {
+    // The re-read after a failed save, outside the transaction.
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => {
+            mockDbCalls.push("re-read");
+            if (mockRereadFails) throw new Error("database down");
+            return mockUserGone ? [] : [{ cvUrl: mockUserRow.cvUrl }];
+          },
+        }),
+      }),
+    }),
     transaction: async <T>(fn: (tx: object) => Promise<T>) =>
       fn({
         select: () => ({
@@ -77,8 +96,9 @@ jest.mock("@ever-hust/db", () => ({
           set: (values: Record<string, unknown>) => ({
             where: async () => {
               mockDbCalls.push(`update ${Object.keys(values).sort().join(",")}`);
-              if (mockSaveFails) throw new Error("connection lost");
+              if (mockSaveFails === "before-commit") throw new Error("connection lost");
               Object.assign(mockUserRow, values);
+              if (mockSaveFails === "after-commit") throw new Error("connection lost");
             },
           }),
         }),
@@ -157,7 +177,8 @@ beforeEach(() => {
   mockUserRow.skills = [];
   mockUserRow.cvUrl = null;
   mockDbCalls.length = 0;
-  mockSaveFails = false;
+  mockSaveFails = "no";
+  mockRereadFails = false;
   mockUserGone = false;
   errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
   warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -284,15 +305,41 @@ describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
 
   it("deletes the new object and keeps the current CV when saving fails", async () => {
     mockUserRow.cvUrl = "user-1/old-cv.pdf";
-    mockSaveFails = true;
+    mockSaveFails = "before-commit";
 
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(500);
     expect(await errorOf(res)).toMatch(/could not save your CV/);
+    // The row was re-read and does not point at the new object.
+    expect(mockDbCalls).toContain("re-read");
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
     expect(mockDeleteFile).toHaveBeenCalledWith(newPath(), "cvs");
     expect(mockUserRow.cvUrl).toBe("user-1/old-cv.pdf");
+  });
+
+  it("keeps the new object when the save committed but reported an error", async () => {
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
+    mockSaveFails = "after-commit";
+
+    const res = await upload("resume.pdf");
+
+    // The row points at the new object: deleting it would leave a dangling
+    // users.cv_url. The replaced CV is not known any more, so it stays.
+    expect(res.status).toBe(200);
+    expect(mockUserRow.cvUrl).toBe(newPath());
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps the new object when neither the save nor the re-read works", async () => {
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
+    mockSaveFails = "before-commit";
+    mockRereadFails = true;
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(500);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
   });
 
   it("deletes the new object when the account was deleted while the upload ran", async () => {
@@ -394,7 +441,7 @@ describe("POST /api/cv/upload tells failures apart", () => {
     mockUploadPrivateFile.mockRejectedValueOnce(new Error("storage down"));
     messages.add(await errorOf(await upload("resume.pdf")));
 
-    mockSaveFails = true;
+    mockSaveFails = "before-commit";
     messages.add(await errorOf(await upload("resume.pdf")));
 
     expect(messages.size).toBe(4);

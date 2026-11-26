@@ -153,10 +153,19 @@ export async function uploadPrivateFile(
   return path;
 }
 
+/** Storage has no object at the path that was asked for. */
+export class StorageObjectNotFoundError extends Error {
+  constructor(message = "Storage object not found") {
+    super(message);
+    this.name = "StorageObjectNotFoundError";
+  }
+}
+
 /**
  * Download a file with the service-role key, from any bucket (private or
  * public). Throws before any network call on an unsafe path, like
- * {@link uploadFile}, and throws when Storage does not return the file.
+ * {@link uploadFile}; throws {@link StorageObjectNotFoundError} when there is
+ * no such object, and a plain Error for any other failure.
  *
  * @param path   - Storage path inside the bucket
  * @param bucket - Storage bucket name (defaults to {@link CV_BUCKET})
@@ -169,12 +178,48 @@ export async function downloadFile(
   assertSafeStoragePath(path);
   const supabase = getSupabaseServer();
   const { data, error } = await supabase.storage.from(bucket).download(path);
+  if (error && (await isNotFoundError(error))) {
+    throw new StorageObjectNotFoundError();
+  }
   if (error || !data) {
     throw new Error(
       `Storage download failed: ${error?.message ?? "no data"}`,
     );
   }
   return data;
+}
+
+/**
+ * Whether a Storage error says the object does not exist. Storage answers a
+ * missing object with HTTP 400 and `{"statusCode":"404","error":"not_found"}`.
+ * storage-js does not read the body of a failed download: it keeps the
+ * response in `originalError`, so the body is read here (from a clone).
+ */
+async function isNotFoundError(error: unknown): Promise<boolean> {
+  if (typeof error !== "object" || error === null) return false;
+  const { status, statusCode, originalError } = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    originalError?: unknown;
+  };
+  if (status === 404 || String(statusCode) === "404") return true;
+  if (
+    typeof originalError !== "object" ||
+    originalError === null ||
+    !("clone" in originalError) ||
+    typeof originalError.clone !== "function"
+  ) {
+    return false;
+  }
+  try {
+    const body = (await (originalError as Response).clone().json()) as {
+      statusCode?: unknown;
+      error?: unknown;
+    } | null;
+    return String(body?.statusCode) === "404" || body?.error === "not_found";
+  } catch {
+    return false;
+  }
 }
 
 /** A Storage object: its bucket and its path inside that bucket. */

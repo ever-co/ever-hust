@@ -7,6 +7,7 @@ import { apiError, apiNotFound } from "../../../../lib/api-response";
 import {
   cvStorageObject,
   downloadFile,
+  StorageObjectNotFoundError,
 } from "@ever-hust/supabase/storage";
 
 /**
@@ -26,6 +27,8 @@ const CV_CONTENT_TYPES: Record<string, string> = {
  * the service-role key and handed only to its owner: the object comes from the
  * caller's own users.cv_url, and cvStorageObject accepts only a path inside the
  * caller's own folder. Nothing on the way may cache it.
+ *
+ * 404 when the user has no CV or its object is gone; 503 when Storage fails.
  */
 export async function GET() {
   let user;
@@ -62,6 +65,11 @@ export async function GET() {
   try {
     file = await downloadFile(object.path, object.bucket);
   } catch (error) {
+    // users.cv_url names an object that is gone: retrying will not help.
+    if (error instanceof StorageObjectNotFoundError) {
+      console.warn("[cv/file] CV object missing:", `${object.bucket}/${object.path}`);
+      return apiNotFound("Your CV file could not be found. Please upload it again.");
+    }
     console.error(
       "[cv/file] Storage download failed:",
       error instanceof Error ? error.message : error,

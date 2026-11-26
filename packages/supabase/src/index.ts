@@ -6,6 +6,7 @@ export {
   uploadFile,
   uploadPrivateFile,
   downloadFile,
+  StorageObjectNotFoundError,
   getPublicUrl,
   deleteFile,
   deleteUserFiles,
