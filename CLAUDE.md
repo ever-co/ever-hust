@@ -29,7 +29,7 @@ design: [`docs/GAUZY-INTEGRATION.md`](docs/GAUZY-INTEGRATION.md).
 ## Package Manager
 
 > [!CAUTION]
-> **This project uses pnpm exclusively.** Do NOT use `npm` or `yarn` — they will fail to resolve workspace dependencies correctly. The root `package.json` specifies `"packageManager": "pnpm@9.15.0"` and workspaces are defined in `pnpm-workspace.yaml`.
+> **This project uses pnpm exclusively.** Do NOT use `npm` or `yarn` — they will fail to resolve workspace dependencies correctly. The root `package.json` pins the exact pnpm release in its `"packageManager"` field (pnpm 10), and workspaces are defined in `pnpm-workspace.yaml`.
 
 ## Commands
 
@@ -60,9 +60,9 @@ ANALYZE=true pnpm build   # Generate bundle analysis report
 
 ## Tech Stack
 
-- **Next.js 16.1** (App Router, React 19, Server Components, Turbopack)
+- **Next.js 16.4** (App Router, React 19, Server Components, Turbopack)
 - **Tailwind CSS 4.1** + **ShadCN UI** (components in `packages/ui/`)
-- **Turborepo** monorepo with **pnpm 9** workspaces
+- **Turborepo** monorepo with **pnpm 10** workspaces
 - **BetterAuth v1** (LinkedIn OAuth, session cookies)
 - **PostgreSQL** via Supabase, **Drizzle ORM** for schemas/queries
 - **Vercel AI SDK v6** with Claude models (Anthropic direct or OpenRouter)
@@ -87,7 +87,7 @@ Turborepo with `apps/*` and `packages/*` workspaces. All packages use `@ever-hus
 - **`packages/jobs-api/`** — Ever Jobs external API client with circuit breaker + retry
 - **`packages/email/`** — React Email templates (welcome, job alert, subscription, verification, password reset) + Resend sender
 - **`packages/triggers/`** — Trigger.dev scheduled tasks (job sync, alerts, cleanup)
-- **`packages/supabase/`** — Supabase client for Realtime + Storage (`uploadFile`, `getPublicUrl`, `deleteFile`)
+- **`packages/supabase/`** — Supabase client for Realtime + Storage (`uploadFile`, `getPublicUrl`, `deleteFile`, `deleteUserFiles`)
 - **`packages/cv-parser/`** — CV/resume parsing logic
 - **`packages/eslint-config/`** — Shared ESLint configs (base, next, react-internal)
 - **`packages/typescript-config/`** — Shared tsconfig presets
@@ -103,6 +103,8 @@ Turborepo with `apps/*` and `packages/*` workspaces. All packages use `@ever-hus
 ### System Prompt Management
 
 Prompts are managed through Langfuse with local fallbacks. The orchestrator system prompt can be edited in Langfuse Cloud (prompt name: `orchestrator-system`, label: `production`) or locally in `packages/ai/src/prompts.ts`.
+
+For a member of an organization with an active AI config, the chat route passes the org's custom system prompt, temperature and max tokens to `createOrchestratorStream`: the custom prompt is appended after the base prompt under an `Organization instructions:` heading (never replacing it), and temperature / max output tokens are sent to the model only when the org set them. On Hust's platform key the org's max tokens can only lower the 8,192-token output cap (`DEFAULT_MAX_OUTPUT_TOKENS` in `credit-fallback.ts`), never raise it; BYOK calls get the org value as set.
 
 ### Routing & Auth
 
@@ -159,6 +161,7 @@ All marketing pages include JSON-LD structured data: `Organization` (landing), `
 - **XSS sanitization**: Custom skill input is sanitized both client-side (onboarding dialog) and server-side (profile PATCH API schema strips HTML tags) to prevent stored XSS attacks
 - **CV upload validation**: Rejects zero-byte files in addition to enforcing the 10MB max size and PDF type checks
 - **Storage paths**: The CV upload stores files as `cvs/{userId}/{uuid}.{ext}` and never uses the client's file name (names with `/`, `\` or `..` get a 400); `uploadFile` in `packages/supabase` throws on `.`/`..` segments (also `%2e`), backslashes and control characters (the URL parser drops tab/CR/LF, so `.\t.` would become `..`), because the service-role upload puts the path into the URL unencoded
+- **Uploaded files on delete**: `DELETE /api/user/account` calls `deleteUserFiles` after the user row is deleted (never on the 409 path), which removes every CV in `cvs/{userId}/` (listed page by page) and `avatars/{userId}.jpg|png|webp`; it logs failures and never throws. A CV upload saves its URL in `users.cv_url` and then removes the CV it replaced, only when the old URL's path (`storagePathFromPublicUrl`) is inside `cvs/{userId}/`; an upload that finds the user row gone (the account was deleted meanwhile) removes its own new object. The avatar upload (`POST /api/user/avatar`, `avatars/{userId}.{ext}`) saves `users.photo_url` under a row lock with `update ... returning`: when no row matched it removes the object it just stored and answers 500, and when the extension changed it removes the previous avatar, only when that path is `avatars/{userId}.jpg|png|webp`. `linkAnonymousUser` calls `deleteUserFiles(guestId)` once the guest row is deleted (the move does not carry the guest's `cv_url` or `photo_url` over)
 - **Guest self-delete**: a global BetterAuth before hook (`packages/auth/src/anonymous-self-delete-guard.ts`) refuses the anonymous plugin's `POST /api/auth/delete-anonymous-user` with 403, because deleting the guest row cascades through `organizations.created_by_id` to every organization the guest created. Guests delete their account with `DELETE /api/user/account`, which hands organizations to another member first. The plugin's `disableDeleteAnonymousUser` is on: after a guest signs up or signs in, `linkAnonymousUser` (`packages/auth/src/link-anonymous-user.ts`) moves the guest's work in one transaction and deletes the guest only once that committed, so a failed move keeps the guest and its data instead of cascading them away
 - **BYOK key safety**: When `BYOK_ENCRYPTION_KEY` is absent, the model router detects encrypted ciphertext and falls through to the platform model instead of sending it as an API key
 - **LLM context hygiene**: `getUserProfile` tool strips encrypted API keys from preferences before returning data to LLM context
@@ -182,6 +185,7 @@ Located in `apps/web/hooks/`. Key hooks:
 ### Testing
 
 - **Jest**: 1120 unit tests across 35 suites, living alongside source files as `*.test.ts`. Projects configured for: `ai`, `stripe`, `cv-parser`, `jobs-api`, `db`, `utils`, `email`, `triggers`, `supabase`, `web-lib`. Uses `ts-jest` with `isolatedModules: true` to avoid OOM from complex AI SDK/Zod generics. Key test files include `model-router.test.ts`, `prompts.test.ts`, `rate-limit.test.ts`, `tool-schemas.test.ts`, `crypto.test.ts`, `api-client.test.ts`, `api-response.test.ts`, `api-schemas.test.ts`, `subscription-gate.test.ts`, `referral-utils.test.ts`, `format-date.test.ts`, `org-config.test.ts`, `webhook-idempotency.test.ts`, `orchestrator.test.ts`, `constants.test.ts`, `env.test.ts`, `startup-checks.test.ts`, `safe-url.test.ts`, `salary-insights.test.ts`, `resume-builder.test.ts`, `resume-helpers.test.ts`, `webhook.test.ts`, `checkout.test.ts`, `portal.test.ts`, `plans.test.ts`, `client.test.ts`, `types.test.ts`, `guidance-topics.test.ts`, `db-helpers.test.ts`, `map-job.test.ts`, `helpers.test.ts`.
+- **Dependency bumps**: `apps/web/lib/__tests__/toolchain-versions.test.ts` fails when a Node bump misses a Dockerfile stage, a workflow, an `engines.node` or an `@types/node`, or when an `@next/*` package is off the exact `next` pin. `packages/auth/src/better-auth-contract.test.ts` builds a real better-auth instance on the Drizzle schema (the adapter's own schema check, the guest-delete guard, every field better-auth writes), and `apps/web/lib/__tests__/mail-smtp-sink.test.ts` runs `lib/mail.ts` with the real nodemailer against a local SMTP sink. A better-auth or nodemailer bump must pass both. `apps/web/lib/__tests__/repo-docs.test.ts` fails when `AGENTS.md` or `CLAUDE.md` name a pnpm major other than the root `packageManager`, so a pnpm major bump updates both docs.
 - **Playwright**: 175 E2E tests across 8 spec files in `tests/e2e/`. Specs for: auth, landing, chat, jobs, profile, subscription. Runs against `http://localhost:8443`.
 
 ### UI Package Pattern
@@ -195,4 +199,5 @@ Langfuse tracing is set up via `apps/web/instrumentation.ts` (Next.js instrument
 ### Environment & Startup
 
 - **`.env.example`** — Reference file listing all environment variables with descriptions. Copy to `.env.local` to get started.
+- **Build-time inlining**: Next.js replaces every literal `process.env.NEXT_PUBLIC_*` with its value at `next build`, in server bundles too, and the web image is built without the Supabase ones (the pods get them at runtime). Server code that needs one at runtime reads it through a variable (`process.env[name]`), as `getSupabaseServer` does (`SUPABASE_URL`, else `NEXT_PUBLIC_SUPABASE_URL`); `packages/supabase/src/server.test.ts` fails if `server.ts` or `storage.ts` reads `process.env.NEXT_PUBLIC_*` directly
 - **Startup checks** (`apps/web/lib/startup-checks.ts`): Runs automatically via `instrumentation.ts` on server boot. Validates critical env vars (`DATABASE_URL`, `BETTER_AUTH_SECRET`) — missing ones throw and prevent startup. Logs warnings for recommended vars (Stripe, LinkedIn OAuth, Resend, Supabase, `NEXT_PUBLIC_APP_URL`) and info for optional vars (OpenRouter, Langfuse, Upstash, Trigger.dev). Also validates that at least one AI provider key is configured.

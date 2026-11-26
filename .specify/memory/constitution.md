@@ -79,7 +79,7 @@ guardrails (epic #6).
 
 ## Article 10 — House Stack, Testing & CI
 
-1. **TypeScript only**; **pnpm** exclusively (never npm/yarn); **Node.js ≥ 24**.
+1. **TypeScript only**; **pnpm** exclusively (never npm/yarn); **Node.js ≥ 26**.
 2. Every AI tool and every public function has at least one unit test (**Jest** + ts-jest,
    `isolatedModules: true`).
 3. Critical user flows have **Playwright** E2E coverage.

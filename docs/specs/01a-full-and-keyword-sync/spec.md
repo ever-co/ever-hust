@@ -158,13 +158,16 @@ type SyncLine =
   stream, summary line always last.
 - Integration (jest, `triggers`, opt-in): `job-store.integration.test.ts` runs the Drizzle store
   and the ingest core against a real, throwaway Postgres (`JOBS_SYNC_IT_DATABASE_URL`, database
-  name must end in `_it`/`_test`, schema pushed first) and proves no tuple is rewritten for an
-  unchanged corpus (`xmin` stable) and none is locked either (`xmax` stays 0, with a control that
-  bypasses the read-ahead and locks them all), a description-only change is written, the weekly
-  refresh re-stores no TOASTed value, the merge (no flip between two sources of one posting,
-  stale-owner takeover, one source's two postings with one key both kept), a read waiting on a
-  lock fails on its statement timeout, and the coordinate reuse and load. CI runs it in the E2E
-  job against that job's Postgres service, before the seed step.
+  name must end in `_it`/`_test`, schema pushed first, a superuser on PostgreSQL 16+ with the
+  `pg_walinspect` extension available) and proves no tuple is rewritten for an unchanged corpus
+  (`xmin` stable) and none is locked either (`xmax` stays 0, with a control that bypasses the
+  read-ahead and locks them all), a description-only change is written, the weekly refresh
+  re-stores no TOASTed value (the TOAST table does not grow, and the WAL written to the pages of
+  `jobs`, its TOAST table and their indexes, page images left out, stays under 24 KB even with a
+  checkpoint and 64 KB of another backend's WAL in the window), the merge (no flip between two
+  sources of one posting, stale-owner takeover, one source's two postings with one key both kept),
+  a read waiting on a lock fails on its statement timeout, and the coordinate reuse and load. CI
+  runs it in the E2E job against that job's Postgres service, before the seed step.
 - No live calls: all upstream access is faked; no shared database is touched.
 
 ## 9. Open Questions

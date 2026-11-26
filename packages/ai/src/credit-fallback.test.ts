@@ -303,4 +303,23 @@ describe("withFreeModelFallback", () => {
     expect(paid.doGenerateCalls[0]!.maxOutputTokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
     expect(paid.doGenerateCalls[1]!.maxOutputTokens).toBe(300);
   });
+
+  it("never raises the output cap above the platform default, for the paid or the free model", async () => {
+    // An org AI config may set max tokens up to 200,000; Hust's key still reserves at most the default.
+    const paid = answering("ok");
+    await generateText({
+      model: withFreeModelFallback(paid, answering("x")),
+      prompt: "a",
+      maxOutputTokens: 200_000,
+    });
+    const free = answering("free answer");
+    await generateText({
+      model: withFreeModelFallback(outOfCredits(), free),
+      prompt: "b",
+      maxOutputTokens: 200_000,
+    });
+
+    expect(paid.doGenerateCalls[0]!.maxOutputTokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
+    expect(free.doGenerateCalls[0]!.maxOutputTokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
+  });
 });
