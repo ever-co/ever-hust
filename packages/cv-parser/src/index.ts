@@ -66,9 +66,20 @@ export function isCvUnreadableError(error: unknown): error is CvUnreadableError 
   );
 }
 
-/** The message of an error from a parser, for a {@link CvUnreadableError}. */
+/**
+ * The message of an error from a parser, for a {@link CvUnreadableError}. Read
+ * by shape, not with instanceof: PDF.js errors can come from another realm.
+ */
 function reason(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return String(error);
 }
 
 // ---------------------------------------------------------------------------
