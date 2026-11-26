@@ -1,26 +1,47 @@
 /**
- * POST /api/cv/upload: the client's file name must never become part of the
- * storage key, so a hand-made multipart filename such as "../victim/resume.pdf"
- * can't make the service-role upload write outside cvs/<userId>/.
+ * POST /api/cv/upload.
  *
- * Each upload gets a random key, so nothing is overwritten any more: the CV a
- * new upload replaces is deleted once the new URL is saved, and the new object
- * is deleted again when parsing or saving fails.
+ * CVs are private: the file goes to the private `cvs` bucket under a
+ * server-chosen key inside {userId}/, users.cv_url keeps the object path (never
+ * a public URL), and the owner fetches it from GET /api/cv/file. The client's
+ * file name never becomes part of the key, so a hand-made multipart filename
+ * such as "../victim/resume.pdf" can't make the service-role upload write
+ * outside the user's folder.
+ *
+ * Each upload gets a random key, so nothing is overwritten: the CV a new upload
+ * replaces is deleted once the new path is saved (also a CV from before CVs
+ * were private, in the public bucket), and the new object is deleted again
+ * when saving fails.
+ *
+ * Failures are told apart: a file that cannot be read is the upload's fault
+ * (422); a parser, Storage or database failure is the server's (5xx), each with
+ * its own message.
  */
-const MOCK_STORAGE = "https://storage.example.com/storage/v1/object/public/user-uploads/";
-const mockUploadFile = jest.fn();
+const PUBLIC_CV_URL =
+  "https://storage.example.com/storage/v1/object/public/user-uploads/cvs/";
+const mockUploadPrivateFile = jest.fn();
 const mockDeleteFile = jest.fn();
-jest.mock("@ever-hust/supabase/storage", () => ({
-  uploadFile: (...args: unknown[]) => mockUploadFile(...args),
-  deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
-  // Stand-in for the real helper (tested in packages/supabase/src/storage.test.ts).
-  storagePathFromPublicUrl: (url: string | null) =>
-    url?.startsWith(MOCK_STORAGE) ? url.slice(MOCK_STORAGE.length) : null,
+jest.mock("@ever-hust/supabase/server", () => ({
+  getSupabaseServer: () => {
+    throw new Error("this test never reaches Storage");
+  },
 }));
+jest.mock("@ever-hust/supabase/storage", () => {
+  // The real resolver of users.cv_url (tested in packages/supabase/src/storage.test.ts).
+  const actual = jest.requireActual("@ever-hust/supabase/storage");
+  return {
+    CV_BUCKET: actual.CV_BUCKET,
+    cvStorageObject: actual.cvStorageObject,
+    uploadPrivateFile: (...args: unknown[]) => mockUploadPrivateFile(...args),
+    deleteFile: (...args: unknown[]) => mockDeleteFile(...args),
+  };
+});
 
 const mockParseCV = jest.fn();
 jest.mock("@ever-hust/cv-parser", () => ({
   parseCV: (...args: unknown[]) => mockParseCV(...args),
+  isCvUnreadableError: (error: unknown) =>
+    error instanceof Error && error.name === "CvUnreadableError",
   SUPPORTED_CV_MIME_TYPES: new Set([
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -86,25 +107,45 @@ function upload(fileName: string, type = "application/pdf") {
   );
 }
 
-/** Every storage path uploadFile was asked to write. */
-function uploadedPaths(): string[] {
-  return mockUploadFile.mock.calls.map((call) => String(call[0]));
+/** An error the real parser throws for bytes it cannot read. */
+function unreadable(message: string): Error {
+  const error = new Error(message);
+  error.name = "CvUnreadableError";
+  return error;
 }
 
+/** Every [path, bucket] uploadPrivateFile was asked to write. */
+function uploads(): Array<[string, string]> {
+  return mockUploadPrivateFile.mock.calls.map((call) => [
+    String(call[0]),
+    String(call[3]),
+  ]);
+}
+
+/** The path of the one object this request uploaded. */
+const newPath = () => String(mockUploadPrivateFile.mock.calls[0][0]);
+
 function expectOnlyInsideUserFolder() {
-  for (const path of uploadedPaths()) {
+  for (const [path, bucket] of uploads()) {
+    expect(bucket).toBe("cvs");
     expect(path).not.toContain("..");
     expect(path).not.toContain("\\");
-    expect(path.startsWith("cvs/user-1/")).toBe(true);
-    expect(path.slice("cvs/user-1/".length)).not.toContain("/");
+    expect(path.startsWith("user-1/")).toBe(true);
+    expect(path.slice("user-1/".length)).not.toContain("/");
   }
 }
 
-function resetMocks() {
-  mockUploadFile.mockReset();
+async function errorOf(res: Response): Promise<string> {
+  return ((await res.json()) as { error: string }).error;
+}
+
+let errorSpy: jest.SpyInstance;
+let warnSpy: jest.SpyInstance;
+beforeEach(() => {
+  mockUploadPrivateFile.mockReset();
   mockDeleteFile.mockReset();
   mockParseCV.mockReset();
-  mockUploadFile.mockImplementation(async (path: string) => `${MOCK_STORAGE}${path}`);
+  mockUploadPrivateFile.mockImplementation(async (path: string) => path);
   mockDeleteFile.mockResolvedValue(undefined);
   mockParseCV.mockResolvedValue({
     name: "Jane",
@@ -118,22 +159,24 @@ function resetMocks() {
   mockDbCalls.length = 0;
   mockSaveFails = false;
   mockUserGone = false;
-}
+  errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+});
+afterEach(() => {
+  errorSpy.mockRestore();
+  warnSpy.mockRestore();
+});
 
 describe("POST /api/cv/upload storage path", () => {
-  beforeEach(resetMocks);
-
   it("refuses a file name that climbs out of the user's folder", async () => {
     const res = await upload("../victim/resume.pdf");
-    expectOnlyInsideUserFolder();
-    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
     expect(res.status).toBe(400);
   });
 
   it("refuses a file name that climbs into another bucket", async () => {
     const res = await upload("../../../other/x.pdf");
-    expectOnlyInsideUserFolder();
-    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
     expect(res.status).toBe(400);
   });
 
@@ -144,51 +187,76 @@ describe("POST /api/cv/upload storage path", () => {
   ])("returns 400 for a file name with %s", async (_label, fileName) => {
     const res = await upload(fileName);
     expect(res.status).toBe(400);
-    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
   });
 
-  it("stores a normal CV under a server-chosen name inside cvs/<userId>/", async () => {
+  it("stores a normal CV in the private bucket under a server-chosen name inside <userId>/", async () => {
     const res = await upload("My Resume.PDF");
     expect(res.status).toBe(200);
-    expect(mockUploadFile).toHaveBeenCalledTimes(1);
+    expect(mockUploadPrivateFile).toHaveBeenCalledTimes(1);
     expectOnlyInsideUserFolder();
-    const [path, , contentType] = mockUploadFile.mock.calls[0];
-    expect(path).toMatch(/^cvs\/user-1\/[0-9a-f-]{36}\.pdf$/);
+    const [path, , contentType, bucket] = mockUploadPrivateFile.mock.calls[0];
+    expect(path).toMatch(/^user-1\/[0-9a-f-]{36}\.pdf$/);
     expect(path).not.toContain("resume");
     expect(contentType).toBe("application/pdf");
+    expect(bucket).toBe("cvs");
   });
 
   it("keeps the extension check for names without a supported extension", async () => {
     const res = await upload("resume.exe");
     expect(res.status).toBe(400);
-    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
   });
 });
 
-describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
-  let errorSpy: jest.SpyInstance;
-  beforeEach(() => {
-    resetMocks();
-    errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-  });
-  afterEach(() => errorSpy.mockRestore());
-
-  const newPath = () => String(mockUploadFile.mock.calls[0][0]);
-
-  it("saves the URL in users.cv_url and deletes the CV it replaces", async () => {
-    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
-
+describe("POST /api/cv/upload keeps CVs private", () => {
+  it("saves the object path, not a URL, in users.cv_url", async () => {
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(200);
-    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}${newPath()}`);
-    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
-    expect(mockDeleteFile).toHaveBeenCalledWith("cvs/user-1/old-cv.pdf");
+    expect(mockUserRow.cvUrl).toBe(newPath());
+    expect(mockUserRow.cvUrl).not.toMatch(/^https?:/);
     // Read under a row lock, written in the same transaction.
     expect(mockDbCalls).toEqual([
       "select for update",
       "update cvParsedData,cvUrl,updatedAt",
     ]);
+  });
+
+  it("answers with the owner-only download route, never a storage URL", async () => {
+    const res = await upload("resume.pdf");
+
+    const body = (await res.json()) as { fileUrl: string };
+    expect(body.fileUrl).toBe("/api/cv/file");
+    expect(JSON.stringify(body)).not.toContain("storage");
+    expect(res.headers.get("Cache-Control")).toContain("no-store");
+  });
+});
+
+describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
+  it("deletes the private CV it replaces", async () => {
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(200);
+    expect(mockUserRow.cvUrl).toBe(newPath());
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith("user-1/old-cv.pdf", "cvs");
+  });
+
+  it("deletes a CV from before CVs were private from the public bucket", async () => {
+    mockUserRow.cvUrl = `${PUBLIC_CV_URL}user-1/old-cv.pdf`;
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(200);
+    expect(mockUserRow.cvUrl).toBe(newPath());
+    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
+    expect(mockDeleteFile).toHaveBeenCalledWith(
+      "cvs/user-1/old-cv.pdf",
+      "user-uploads",
+    );
   });
 
   it("deletes nothing on a first upload", async () => {
@@ -198,37 +266,33 @@ describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
     expect(mockDeleteFile).not.toHaveBeenCalled();
   });
 
-  it("never deletes an object outside the user's own folder", async () => {
-    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-2/their-cv.pdf`;
+  it.each([
+    ["a private path", "user-2/their-cv.pdf"],
+    ["a public URL", `${PUBLIC_CV_URL}user-2/their-cv.pdf`],
+    ["a path with a parent segment", "user-1/../user-2/their-cv.pdf"],
+  ])(
+    "never deletes another user's CV named by %s",
+    async (_label, stored) => {
+      mockUserRow.cvUrl = stored;
 
-    await upload("resume.pdf");
+      const res = await upload("resume.pdf");
 
-    expect(mockDeleteFile).not.toHaveBeenCalled();
-  });
-
-  it("deletes the new object and keeps the current CV when parsing fails", async () => {
-    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
-    mockParseCV.mockRejectedValue(new Error("not a PDF"));
-
-    const res = await upload("resume.pdf");
-
-    expect(res.status).toBe(500);
-    expect(mockDeleteFile).toHaveBeenCalledTimes(1);
-    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
-    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}cvs/user-1/old-cv.pdf`);
-    expect(mockDbCalls).toEqual([]);
-  });
+      expect(res.status).toBe(200);
+      expect(mockDeleteFile).not.toHaveBeenCalled();
+    },
+  );
 
   it("deletes the new object and keeps the current CV when saving fails", async () => {
-    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
     mockSaveFails = true;
 
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(500);
+    expect(await errorOf(res)).toMatch(/could not save your CV/);
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
-    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
-    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}cvs/user-1/old-cv.pdf`);
+    expect(mockDeleteFile).toHaveBeenCalledWith(newPath(), "cvs");
+    expect(mockUserRow.cvUrl).toBe("user-1/old-cv.pdf");
   });
 
   it("deletes the new object when the account was deleted while the upload ran", async () => {
@@ -236,22 +300,20 @@ describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
 
     const res = await upload("resume.pdf");
 
-    expect(res.status).toBe(500);
+    expect(res.status).toBe(404);
     expect(mockDeleteFile).toHaveBeenCalledTimes(1);
-    expect(mockDeleteFile).toHaveBeenCalledWith(newPath());
+    expect(mockDeleteFile).toHaveBeenCalledWith(newPath(), "cvs");
     expect(mockDbCalls).toEqual(["select for update"]);
   });
 
   it("answers 200 when deleting the replaced CV fails", async () => {
-    mockUserRow.cvUrl = `${MOCK_STORAGE}cvs/user-1/old-cv.pdf`;
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
     mockDeleteFile.mockRejectedValue(new Error("storage down"));
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
 
     const res = await upload("resume.pdf");
 
     expect(res.status).toBe(200);
-    expect(mockUserRow.cvUrl).toBe(`${MOCK_STORAGE}${newPath()}`);
-    warnSpy.mockRestore();
+    expect(mockUserRow.cvUrl).toBe(newPath());
   });
 
   it("merges the CV's skills into the user's skills", async () => {
@@ -267,5 +329,74 @@ describe("POST /api/cv/upload and the CV objects it leaves behind", () => {
     await upload("resume.pdf");
 
     expect(mockUserRow.skills).toEqual(["Go", "Rust"]);
+  });
+});
+
+/**
+ * The route used to answer every failure, a Storage outage included, with
+ * "Failed to parse CV. Please ensure the file is valid." and a 500: a user
+ * whose file was fine was told it was broken.
+ */
+describe("POST /api/cv/upload tells failures apart", () => {
+  it("answers 422 for a file the parser cannot read, and stores nothing", async () => {
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
+    mockParseCV.mockRejectedValue(unreadable("Unreadable PDF: Invalid PDF structure."));
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(422);
+    expect(await errorOf(res)).toMatch(/could not read this CV/);
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockDbCalls).toEqual([]);
+    expect(mockUserRow.cvUrl).toBe("user-1/old-cv.pdf");
+  });
+
+  it("answers 500, not 'invalid file', when the parser itself fails", async () => {
+    mockParseCV.mockRejectedValue(new Error("Cannot find module 'unpdf'"));
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(500);
+    const message = await errorOf(res);
+    expect(message).toMatch(/could not process your CV/);
+    expect(message).not.toMatch(/valid|read this CV/);
+    expect(mockUploadPrivateFile).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 with a storage message when Storage refuses the upload", async () => {
+    mockUserRow.cvUrl = "user-1/old-cv.pdf";
+    mockUploadPrivateFile.mockRejectedValue(
+      new Error("Storage upload failed: Bucket not found"),
+    );
+
+    const res = await upload("resume.pdf");
+
+    expect(res.status).toBe(503);
+    const message = await errorOf(res);
+    expect(message).toMatch(/could not store your CV/);
+    expect(message).not.toMatch(/valid|parse/i);
+    // Nothing was stored, so nothing is saved or deleted.
+    expect(mockDbCalls).toEqual([]);
+    expect(mockDeleteFile).not.toHaveBeenCalled();
+    expect(mockUserRow.cvUrl).toBe("user-1/old-cv.pdf");
+  });
+
+  it("gives each failure its own message", async () => {
+    const messages = new Set<string>();
+
+    mockParseCV.mockRejectedValueOnce(unreadable("Unreadable DOCX: zip"));
+    messages.add(await errorOf(await upload("resume.pdf")));
+
+    mockParseCV.mockRejectedValueOnce(new Error("parser crashed"));
+    messages.add(await errorOf(await upload("resume.pdf")));
+
+    mockUploadPrivateFile.mockRejectedValueOnce(new Error("storage down"));
+    messages.add(await errorOf(await upload("resume.pdf")));
+
+    mockSaveFails = true;
+    messages.add(await errorOf(await upload("resume.pdf")));
+
+    expect(messages.size).toBe(4);
   });
 });

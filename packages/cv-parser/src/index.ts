@@ -42,6 +42,35 @@ export const SUPPORTED_CV_MIME_TYPES = new Set([
 /** File extensions accepted by the CV parser (without leading dot). */
 export const SUPPORTED_CV_EXTENSIONS = new Set(["pdf", "docx", "txt"]);
 
+/**
+ * The file's bytes are not a readable document of its type: a broken PDF, a
+ * DOCX that is not a zip, and so on. The upload's fault, not the server's.
+ * Every other error from {@link parseCV} is a fault on our side (a parser
+ * that failed to load, for example).
+ */
+export class CvUnreadableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "CvUnreadableError";
+  }
+}
+
+/**
+ * True for a {@link CvUnreadableError}. Checks the name too, so it also holds
+ * when the error comes from another copy of this module.
+ */
+export function isCvUnreadableError(error: unknown): error is CvUnreadableError {
+  return (
+    error instanceof CvUnreadableError ||
+    (error instanceof Error && error.name === "CvUnreadableError")
+  );
+}
+
+/** The message of an error from a parser, for a {@link CvUnreadableError}. */
+function reason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ---------------------------------------------------------------------------
 // Text extraction — one function per format
 // ---------------------------------------------------------------------------
@@ -56,15 +85,27 @@ export const SUPPORTED_CV_EXTENSIONS = new Set(["pdf", "docx", "txt"]);
  * route that imported this package failed to load ("DOMMatrix is not defined").
  *
  * It is imported here, on first use, so loading this module (and the routes
- * that import it) never evaluates PDF.js.
+ * that import it) never evaluates PDF.js. A failed import is a server fault and
+ * is thrown as is; bytes PDF.js cannot read throw {@link CvUnreadableError}.
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   const { extractText, getDocumentProxy } = await import("unpdf");
-  // A copy: PDF.js may take over (detach) the bytes it is given.
-  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  let pdf: Awaited<ReturnType<typeof getDocumentProxy>>;
+  try {
+    // A copy: PDF.js may take over (detach) the bytes it is given.
+    pdf = await getDocumentProxy(new Uint8Array(buffer));
+  } catch (error) {
+    throw new CvUnreadableError(`Unreadable PDF: ${reason(error)}`, {
+      cause: error,
+    });
+  }
   try {
     const { text } = await extractText(pdf, { mergePages: true });
     return text;
+  } catch (error) {
+    throw new CvUnreadableError(`Unreadable PDF: ${reason(error)}`, {
+      cause: error,
+    });
   } finally {
     // PDF.js 5 has no PDFDocumentProxy.destroy(): the loading task owns the
     // document and its worker, and destroying it frees both.
@@ -73,11 +114,18 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
 }
 
 /**
- * Extract text from a DOCX buffer using mammoth.
+ * Extract text from a DOCX buffer using mammoth. Bytes mammoth cannot read
+ * (not a zip, no document part) throw {@link CvUnreadableError}.
  */
 export async function extractTextFromDOCX(buffer: Buffer): Promise<string> {
-  const result = await mammoth.extractRawText({ buffer });
-  return result.value;
+  try {
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value;
+  } catch (error) {
+    throw new CvUnreadableError(`Unreadable DOCX: ${reason(error)}`, {
+      cause: error,
+    });
+  }
 }
 
 /**

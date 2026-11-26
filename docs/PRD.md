@@ -480,7 +480,7 @@ export const users = pgTable("users", {
   experience: jsonb("experience"), // Parsed experience entries
   headline: text("headline"),
   photoUrl: text("photo_url"),
-  cvUrl: text("cv_url"), // Supabase Storage URL
+  cvUrl: text("cv_url"), // object path in the private `cvs` bucket, e.g. "{userId}/{uuid}.pdf"
   cvParsedData: jsonb("cv_parsed_data"),
   preferences: jsonb("preferences").$type<{
     jobType: ("remote" | "hybrid" | "onsite")[];
@@ -1103,8 +1103,8 @@ Topics to explore naturally during conversation (NOT hardcoded question sequence
 
 **Flow**:
 
-1. File uploaded to Supabase Storage -> `cvUrl`
-2. Text extracted (pdf-parse for PDF, mammoth for DOCX)
+1. Text extracted (unpdf for PDF, mammoth for DOCX); a file that cannot be read is refused (422) before anything is stored
+2. File stored in the private `cvs` Storage bucket -> `cvUrl` (the object path; the owner downloads it from `GET /api/cv/file`)
 3. AI-powered structured data extraction (skills, experience, education, certifications, summary)
 4. Parsed data stored in `users.cvParsedData`
 5. AI confirms extracted data with user in chat
@@ -1685,9 +1685,14 @@ Content-Type: multipart/form-data
 Body: file (PDF/DOCX, max 10MB)
 
 Response: {
-  cvUrl: "https://supabase.storage/...",
-  parsedData: { skills, experience, education, summary }
+  parsed: { name, email, phone, skills, skillsCount, hasExperience, hasEducation, textLength },
+  fileUrl: "/api/cv/file"
 }
+
+Errors: 400 invalid upload, 422 unreadable file, 500 parser or database failure, 503 storage failure.
+
+GET /api/cv/file
+Response: the signed-in user's own CV as a download (Cache-Control: private, no-store); 404 when there is none.
 ```
 
 ---

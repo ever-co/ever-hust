@@ -365,13 +365,14 @@ This document captures key architectural decisions made during the MVP implement
 
 - **Uppy Core** (`@uppy/core`) + **Dashboard** (`@uppy/dashboard`) + **XHR Upload** (`@uppy/xhr-upload`) for the client-side upload UI
 - **Supabase Storage** helpers in `packages/supabase/src/storage.ts`: `uploadFile()`, `getPublicUrl()`, `deleteFile()`
-- Avatar images stored at `avatars/{userId}.{ext}` in Supabase Storage
-- CV PDFs stored at `cvs/{userId}/{filename}` in Supabase Storage
+- Avatar images stored at `avatars/{userId}.{ext}` in the public `user-uploads` bucket
+- CVs stored at `{userId}/{uuid}.{ext}` in the private `cvs` bucket (`uploadPrivateFile()`), never under the client's file name; `users.cv_url` keeps the object path and the owner downloads the file from `GET /api/cv/file` (CVs carry personal data, and Cloudflare caches public objects for hours)
 
 **API routes**:
 
 - `/api/user/avatar` — handles avatar upload, stores in Supabase, updates `photoUrl`
 - `/api/cv/upload` — handles CV upload to Supabase + AI extraction pipeline
+- `/api/cv/file` — serves the signed-in user's own CV (private bucket, no public URL)
 
 **Consequence**:
 

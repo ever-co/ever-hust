@@ -14,10 +14,13 @@ jest.mock("./server", () => ({
 }));
 
 import {
+  cvStorageObject,
   deleteFile,
   deleteUserFiles,
+  downloadFile,
   storagePathFromPublicUrl,
   uploadFile,
+  uploadPrivateFile,
 } from "./storage";
 
 const data = Buffer.from("hello world");
@@ -111,12 +114,14 @@ describe("uploadFile path guard", () => {
 });
 
 /**
- * Deleting an account must also erase the files the user uploaded: every CV in
- * cvs/<userId>/ (name, email, phone, work history) and the avatar, whatever its
- * extension. Storage lists a folder 100 entries at a time, so the folder has to
- * be read page by page.
+ * Deleting an account must also erase the files the user uploaded: every CV
+ * (name, email, phone, work history) in the private bucket's {userId}/ folder,
+ * every CV from before CVs were private in the public bucket's cvs/{userId}/,
+ * and the avatar, whatever its extension. Storage lists a folder 100 entries
+ * at a time, so each folder has to be read page by page.
  */
 describe("deleteUserFiles", () => {
+  /** list(bucket, folder, options) and remove(bucket, paths): the bucket comes first. */
   const mockList = jest.fn();
   const mockRemove = jest.fn();
   let warn: jest.SpyInstance;
@@ -126,12 +131,21 @@ describe("deleteUserFiles", () => {
     { length: 150 },
     (_, i) => `${String(i).padStart(3, "0")}.pdf`,
   );
+  const avatarPaths = ["avatars/u1.jpg", "avatars/u1.png", "avatars/u1.webp"];
+  const publicAvatars = avatarPaths.map((path) => `user-uploads:${path}`);
 
-  /** Serve `names` the way Storage does: one page per call, by offset and limit. */
-  function serveFolder(names: string[]) {
+  /**
+   * Serve each "bucket/folder" key's names the way Storage does: one page per
+   * call, by offset and limit. Folders not named are empty.
+   */
+  function serveFolders(folders: Record<string, string[]>) {
     mockList.mockImplementation(
-      async (_path: string, options: { limit: number; offset: number }) => ({
-        data: names
+      async (
+        bucket: string,
+        folder: string,
+        options: { limit: number; offset: number },
+      ) => ({
+        data: (folders[`${bucket}/${folder}`] ?? [])
           .slice(options.offset, options.offset + options.limit)
           .map((name) => ({ name, id: `id-${name}` })),
         error: null,
@@ -139,9 +153,13 @@ describe("deleteUserFiles", () => {
     );
   }
 
-  /** Every path passed to remove(), across all calls. */
-  function removedPaths(): string[] {
-    return mockRemove.mock.calls.flatMap((call) => call[0] as string[]);
+  /** Every "bucket:path" passed to remove(), across all calls, sorted. */
+  function removed(): string[] {
+    return mockRemove.mock.calls
+      .flatMap(([bucket, paths]) =>
+        (paths as string[]).map((path) => `${bucket as string}:${path}`),
+      )
+      .sort();
   }
 
   beforeEach(() => {
@@ -149,7 +167,10 @@ describe("deleteUserFiles", () => {
     mockRemove.mockReset();
     mockFrom.mockReset();
     mockRemove.mockResolvedValue({ data: [], error: null });
-    mockFrom.mockReturnValue({ list: mockList, remove: mockRemove });
+    mockFrom.mockImplementation((bucket: string) => ({
+      list: (...args: unknown[]) => mockList(bucket, ...args),
+      remove: (...args: unknown[]) => mockRemove(bucket, ...args),
+    }));
     warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
@@ -157,67 +178,88 @@ describe("deleteUserFiles", () => {
     warn.mockRestore();
   });
 
-  it("lists cvs/<userId> across two pages and removes every CV plus the three avatar paths", async () => {
-    serveFolder(cvNames);
+  it("lists the private <userId> folder across two pages and removes every CV plus the avatar paths", async () => {
+    serveFolders({ "cvs/u1": cvNames });
 
     await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
 
-    expect(mockFrom).toHaveBeenCalledWith("user-uploads");
+    const cvListCalls = mockList.mock.calls.filter(([bucket]) => bucket === "cvs");
     // Two pages: the first is full, the second is not, so listing stops there.
-    expect(mockList).toHaveBeenCalledTimes(2);
-    expect(mockList.mock.calls.map((call) => call[0])).toEqual([
-      "cvs/u1",
-      "cvs/u1",
-    ]);
-    expect(mockList.mock.calls.map((call) => call[1].offset)).toEqual([0, 100]);
-    expect(removedPaths().sort()).toEqual(
-      [
-        ...cvNames.map((name) => `cvs/u1/${name}`),
-        "avatars/u1.jpg",
-        "avatars/u1.png",
-        "avatars/u1.webp",
-      ].sort(),
+    expect(cvListCalls.map((call) => call[1])).toEqual(["u1", "u1"]);
+    expect(cvListCalls.map((call) => call[2].offset)).toEqual([0, 100]);
+    expect(removed()).toEqual(
+      [...cvNames.map((name) => `cvs:u1/${name}`), ...publicAvatars].sort(),
     );
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("removes the avatar paths when the user has no CV", async () => {
-    serveFolder([]);
+  it("also removes CVs from before CVs were private, in the public bucket's cvs/<userId>", async () => {
+    serveFolders({
+      "cvs/u1": ["new.pdf"],
+      "user-uploads/cvs/u1": ["old-1.pdf", "old-2.docx"],
+    });
 
     await deleteUserFiles("u1");
 
-    expect(mockList).toHaveBeenCalledTimes(1);
-    expect(removedPaths().sort()).toEqual([
-      "avatars/u1.jpg",
-      "avatars/u1.png",
-      "avatars/u1.webp",
+    expect(mockList.mock.calls.map((call) => `${call[0]}/${call[1]}`)).toEqual([
+      "cvs/u1",
+      "user-uploads/cvs/u1",
     ]);
+    expect(removed()).toEqual(
+      [
+        "cvs:u1/new.pdf",
+        "user-uploads:cvs/u1/old-1.pdf",
+        "user-uploads:cvs/u1/old-2.docx",
+        ...publicAvatars,
+      ].sort(),
+    );
   });
 
-  it("logs a failed listing, still removes the avatar paths and does not throw", async () => {
-    mockList.mockResolvedValue({ data: null, error: { message: "list down" } });
+  it("removes only the avatar paths when the user has no CV", async () => {
+    serveFolders({});
+
+    await deleteUserFiles("u1");
+
+    expect(mockList).toHaveBeenCalledTimes(2);
+    expect(removed()).toEqual([...publicAvatars].sort());
+  });
+
+  it("logs a failed listing of the private folder and still cleans the public bucket", async () => {
+    mockList.mockImplementation(async (bucket: string) =>
+      bucket === "cvs"
+        ? { data: null, error: { message: "list down" } }
+        : { data: [], error: null },
+    );
 
     await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
 
-    expect(removedPaths()).toEqual(
-      expect.arrayContaining([
-        "avatars/u1.jpg",
-        "avatars/u1.png",
-        "avatars/u1.webp",
-      ]),
-    );
+    expect(removed()).toEqual([...publicAvatars].sort());
     expect(warn).toHaveBeenCalled();
   });
 
-  it("logs a failed remove and does not throw", async () => {
-    serveFolder(["a.pdf"]);
-    mockRemove.mockResolvedValue({
-      data: null,
-      error: { message: "remove down" },
+  it("logs a list call that throws and still cleans the public bucket", async () => {
+    mockList.mockImplementation(async (bucket: string) => {
+      if (bucket === "cvs") throw new Error("socket hang up");
+      return { data: [], error: null };
     });
 
     await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
 
+    expect(removed()).toEqual([...publicAvatars].sort());
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("logs a failed remove in one bucket and still removes in the other", async () => {
+    serveFolders({ "cvs/u1": ["a.pdf"] });
+    mockRemove.mockImplementation(async (bucket: string) =>
+      bucket === "cvs"
+        ? { data: null, error: { message: "remove down" } }
+        : { data: [], error: null },
+    );
+
+    await expect(deleteUserFiles("u1")).resolves.toBeUndefined();
+
+    expect(removed()).toContain("user-uploads:avatars/u1.webp");
     expect(warn).toHaveBeenCalled();
   });
 
@@ -245,6 +287,152 @@ describe("deleteUserFiles", () => {
     expect(mockList).not.toHaveBeenCalled();
     expect(mockRemove).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
+  });
+});
+
+/**
+ * CVs go to the private bucket: no public URL, never overwritten, and stored
+ * with a Cache-Control that keeps Cloudflare (in front of the Storage host)
+ * from keeping a copy.
+ */
+describe("uploadPrivateFile", () => {
+  const mockUploadPrivate = jest.fn();
+  beforeEach(() => {
+    mockFrom.mockReset();
+    mockUploadPrivate.mockReset();
+    mockUploadPrivate.mockResolvedValue({ data: {}, error: null });
+    mockFrom.mockReturnValue({ upload: mockUploadPrivate });
+  });
+
+  it("uploads to the private cvs bucket and returns the path, not a URL", async () => {
+    const path = "user-1/0b6f3c9e-5d2a-4c1f-9a7e-2f1d3c4b5a69.pdf";
+
+    await expect(uploadPrivateFile(path, data, "application/pdf")).resolves.toBe(path);
+
+    expect(mockFrom).toHaveBeenCalledWith("cvs");
+    expect(mockUploadPrivate).toHaveBeenCalledWith(path, data, {
+      contentType: "application/pdf",
+      upsert: false,
+      headers: { "cache-control": "private, no-store" },
+    });
+  });
+
+  it("throws when Storage refuses the upload", async () => {
+    mockUploadPrivate.mockResolvedValue({
+      data: null,
+      error: { message: "Bucket not found" },
+    });
+
+    await expect(
+      uploadPrivateFile("user-1/x.pdf", data, "application/pdf"),
+    ).rejects.toThrow("Storage upload failed: Bucket not found");
+  });
+
+  it("refuses an unsafe path before calling Storage", async () => {
+    await expect(
+      uploadPrivateFile("user-1/../user-2/x.pdf", data, "application/pdf"),
+    ).rejects.toThrow(/Invalid storage path/);
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+});
+
+describe("downloadFile", () => {
+  const mockDownload = jest.fn();
+  beforeEach(() => {
+    mockFrom.mockReset();
+    mockDownload.mockReset();
+    mockFrom.mockReturnValue({ download: mockDownload });
+  });
+
+  it("returns the file from the private cvs bucket by default", async () => {
+    const blob = new Blob(["%PDF-1.4"], { type: "application/pdf" });
+    mockDownload.mockResolvedValue({ data: blob, error: null });
+
+    await expect(downloadFile("user-1/x.pdf")).resolves.toBe(blob);
+
+    expect(mockFrom).toHaveBeenCalledWith("cvs");
+    expect(mockDownload).toHaveBeenCalledWith("user-1/x.pdf");
+  });
+
+  it("reads another bucket when asked", async () => {
+    mockDownload.mockResolvedValue({ data: new Blob(["x"]), error: null });
+
+    await downloadFile("cvs/user-1/x.pdf", "user-uploads");
+
+    expect(mockFrom).toHaveBeenCalledWith("user-uploads");
+  });
+
+  it("throws when Storage does not return the file", async () => {
+    mockDownload.mockResolvedValue({
+      data: null,
+      error: { message: "Object not found" },
+    });
+
+    await expect(downloadFile("user-1/x.pdf")).rejects.toThrow(
+      "Storage download failed: Object not found",
+    );
+  });
+
+  it("refuses an unsafe path before calling Storage", async () => {
+    await expect(downloadFile("user-1/%2e%2e/user-2/x.pdf")).rejects.toThrow(
+      /Invalid storage path/,
+    );
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * users.cv_url names the CV to serve, replace or delete with the service-role
+ * key, so it must only ever resolve to an object in the user's own folder.
+ */
+describe("cvStorageObject", () => {
+  const publicBase =
+    "https://supabase.example.com/storage/v1/object/public/user-uploads/";
+
+  it("reads a path in the private bucket", () => {
+    expect(cvStorageObject("user-1/0b6f.pdf", "user-1")).toEqual({
+      bucket: "cvs",
+      path: "user-1/0b6f.pdf",
+    });
+  });
+
+  it("reads a public URL from before CVs were private", () => {
+    expect(
+      cvStorageObject(`${publicBase}cvs/user-1/0b6f.pdf`, "user-1"),
+    ).toEqual({ bucket: "user-uploads", path: "cvs/user-1/0b6f.pdf" });
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["an empty value", ""],
+    ["another user's path", "user-2/0b6f.pdf"],
+    ["a path whose folder only starts with the user id", "user-10/0b6f.pdf"],
+    ["the user's folder itself", "user-1/"],
+    ["a nested path", "user-1/sub/0b6f.pdf"],
+    ["a parent segment", "user-1/../user-2/0b6f.pdf"],
+    ["an encoded parent segment", "user-1/%2e%2e"],
+    ["a backslash", "user-1/..\\user-2\\x.pdf"],
+    ["a control character", "user-1/x.pdf\u0000"],
+    ["a public URL of another user's CV", `${publicBase}cvs/user-2/0b6f.pdf`],
+    ["a public URL of the user's avatar", `${publicBase}avatars/user-1.png`],
+    ["a public URL with a parent segment", `${publicBase}cvs/user-1/../user-2/x.pdf`],
+    ["a public URL of a nested path", `${publicBase}cvs/user-1/sub/x.pdf`],
+    [
+      "a public URL of another bucket",
+      "https://supabase.example.com/storage/v1/object/public/other/cvs/user-1/x.pdf",
+    ],
+    ["a URL of another site", "https://evil.example.com/user-1/x.pdf"],
+  ])("returns null for %s", (_label, stored) => {
+    expect(cvStorageObject(stored, "user-1")).toBeNull();
+  });
+
+  it.each([
+    ["an empty user id", ""],
+    ["a user id with a slash", "user-1/x"],
+    ["a dot-dot user id", ".."],
+  ])("returns null for %s", (_label, userId) => {
+    expect(cvStorageObject(`${userId}/x.pdf`, userId)).toBeNull();
   });
 });
 
