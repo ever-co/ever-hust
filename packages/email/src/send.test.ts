@@ -44,6 +44,7 @@ import {
   sendWelcomeEmail,
   sendSubscriptionConfirmedEmail,
   sendPasswordResetEmail,
+  sendOrganizationInvitationEmail,
   isDeduplicatedEmail,
 } from "./send";
 import { render } from "@react-email/components";
@@ -501,5 +502,85 @@ describe("sendPasswordResetEmail", () => {
     await jest.runAllTimersAsync();
     await assertion;
     expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sendOrganizationInvitationEmail", () => {
+  const acceptUrl = "https://test.hust.so/organizations/invitations/3f2c9a40-0000-4000-8000-000000000055";
+  const params = {
+    to: "invitee@example.com",
+    orgName: "Acme & <Co>",
+    inviterName: "Olivia Owner",
+    role: "admin",
+    acceptUrl,
+    invitationId: 55,
+  };
+
+  // Render the real template: the escaping is done by React when the email is rendered.
+  beforeEach(() => {
+    mockRender.mockImplementation(jest.requireActual("@react-email/components").render);
+  });
+  afterEach(() => {
+    mockRender.mockReset();
+    mockRender.mockResolvedValue("<html>mock</html>");
+  });
+
+  async function sendAndGetHtml(overrides: Partial<typeof params> = {}): Promise<string> {
+    mockSend.mockResolvedValueOnce({ data: { id: "invite_1" }, error: null });
+    const promise = sendOrganizationInvitationEmail({ ...params, ...overrides });
+    await jest.runAllTimersAsync();
+    expect(await promise).toEqual({ id: "invite_1" });
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    return mockSend.mock.calls[0][0].html as string;
+  }
+
+  it("renders the accept URL as the button link, with the inviter, the org and the role", async () => {
+    const html = await sendAndGetHtml();
+
+    expect(html).toContain(`href="${acceptUrl}"`);
+    expect(html).toContain("Olivia Owner");
+    expect(html).toContain("Acme &amp; &lt;Co&gt;");
+    expect(html).toContain("an admin");
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: "test@hust.so",
+        to: "invitee@example.com",
+        subject: "You're invited to join Acme & <Co> on Hust",
+      }),
+      { idempotencyKey: "org-invitation/55" },
+    );
+  });
+
+  it("renders HTML in the org name and the inviter name as escaped text, not as markup", async () => {
+    const html = await sendAndGetHtml({
+      orgName: '<a href="https://evil.example">Acme</a>',
+      inviterName: "<img src=x onerror=alert(1)>",
+    });
+
+    expect(html).toContain("&lt;a href=");
+    expect(html).not.toContain('<a href="https://evil.example"');
+    expect(html).toContain("&lt;img");
+    expect(html).not.toContain("<img src=x");
+  });
+
+  it("keeps the subject on one line when the org name has line breaks", async () => {
+    await sendAndGetHtml({ orgName: "Acme\r\nBcc: victim@example.com" });
+
+    expect(mockSend.mock.calls[0][0].subject).toBe(
+      "You're invited to join Acme Bcc: victim@example.com on Hust",
+    );
+  });
+
+  it("uses the same idempotency key on every retry of one invitation", async () => {
+    mockSend
+      .mockResolvedValueOnce({ data: null, error: { name: "internal_server_error", message: "upstream", statusCode: 500 } })
+      .mockResolvedValueOnce({ data: { id: "invite_2" }, error: null });
+    const promise = sendOrganizationInvitationEmail(params);
+    await jest.runAllTimersAsync();
+    expect(await promise).toEqual({ id: "invite_2" });
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    for (const call of mockSend.mock.calls) {
+      expect(call[1]).toEqual({ idempotencyKey: "org-invitation/55" });
+    }
   });
 });
