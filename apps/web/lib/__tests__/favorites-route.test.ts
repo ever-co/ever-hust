@@ -32,8 +32,8 @@ const mockUserJobs = mockColumns([
 
 const mockState = {
   rows: [] as Row[],
-  /** Every statement in order, with the where clause it ran with. */
-  statements: [] as Array<{ sql: string; where?: Cond }>,
+  /** Every statement in order, with the where clause it ran with (and a select's row lock). */
+  statements: [] as Array<{ sql: string; where?: Cond; lock?: string }>,
   nextId: 1,
 };
 
@@ -88,15 +88,15 @@ function mockInsertRow(values: Row): Row {
 }
 
 function mockMakeDb() {
-  const record = (sql: string, where?: Cond) =>
-    mockState.statements.push({ sql, where });
+  const record = (sql: string, where?: Cond, lock?: string) =>
+    mockState.statements.push({ sql, where, ...(lock ? { lock } : {}) });
 
   return {
     select: (projection: Record<string, Column>) => ({
       from: () => ({
         where: (cond: Cond) => {
-          const read = (n = Infinity) => {
-            record("select", cond);
+          const read = (n = Infinity, lock?: string) => {
+            record("select", cond, lock);
             return mockProject(
               projection,
               mockState.rows.filter((r) => mockMatches(r, cond)).slice(0, n),
@@ -104,7 +104,11 @@ function mockMakeDb() {
           };
           return {
             ...mockLazy(() => read()),
-            limit: (n: number) => mockLazy(() => read(n)),
+            limit: (n: number) => ({
+              ...mockLazy(() => read(n)),
+              // SELECT ... FOR UPDATE
+              for: (strength: string) => mockLazy(() => read(n, strength)),
+            }),
           };
         },
       }),
@@ -291,6 +295,16 @@ describe("POST /api/user/favorites", () => {
     for (const write of writes) {
       expect(eqTerms(write.where)).toEqual([`id=${String(viewed.id)}`]);
     }
+  });
+
+  it("locks the row it reads (FOR UPDATE), so an apply committing meanwhile is not overwritten", async () => {
+    seed("viewed");
+
+    await favorite();
+
+    const reads = mockState.statements.filter((s) => s.sql === "select");
+    expect(reads).toHaveLength(1);
+    expect(reads[0]!.lock).toBe("update");
   });
 });
 

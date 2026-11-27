@@ -68,11 +68,14 @@ export async function POST(req: Request) {
   try {
     // Wrap in transaction to prevent TOCTOU race on concurrent toggle requests
     const favorited = await db.transaction(async (tx) => {
+      // FOR UPDATE: an apply that marks this row 'applied' at the same moment is waited for and
+      // then seen, instead of being overwritten (or deleted) by the update below
       const existing = await tx
         .select({ id: userJobs.id, status: userJobs.status })
         .from(userJobs)
         .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)))
-        .limit(1);
+        .limit(1)
+        .for("update");
 
       // Don't overwrite "applied" status: it would lose the application tracking
       if (existing.length > 0 && existing[0]!.status === "applied") {

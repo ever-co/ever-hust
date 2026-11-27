@@ -8,6 +8,9 @@ import { responseErrorMessage } from "../lib/response-error";
 
 const FAVORITE_FAILED = "Failed to update favorite";
 
+/** A failed toggle whose message is meant for the user (the server's 409 reason or the generic text). */
+class FavoriteToggleError extends Error {}
+
 /**
  * Hook for managing the user's favorited jobs.
  *
@@ -40,7 +43,7 @@ export function useFavorites() {
       });
       if (!res.ok) {
         // A 409 says why, e.g. the job is tracked as an application
-        throw new Error(
+        throw new FavoriteToggleError(
           res.status === 409
             ? await responseErrorMessage(res, FAVORITE_FAILED)
             : FAVORITE_FAILED,
@@ -62,7 +65,10 @@ export function useFavorites() {
       if (context?.prev) {
         queryClient.setQueryData(["favorites"], context.prev);
       }
-      toast.error(err.message || FAVORITE_FAILED);
+      // Only our own message: a network failure's TypeError ("Failed to fetch") is not for the user
+      toast.error(
+        err instanceof FavoriteToggleError ? err.message : FAVORITE_FAILED,
+      );
     },
     onSuccess: (data) => {
       // Reconcile with server truth
