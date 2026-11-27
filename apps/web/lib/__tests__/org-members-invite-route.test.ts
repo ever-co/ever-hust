@@ -164,6 +164,7 @@ describe("POST /api/organizations/[orgId]/members sends the invitation", () => {
       role: "member",
       acceptUrl: `https://app.hust.test/organizations/invitations/${token}`,
       invitationId: 55,
+      invitedAt: mockInserted[0]!.createdAt,
     });
   });
 

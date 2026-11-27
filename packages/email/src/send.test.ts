@@ -514,7 +514,9 @@ describe("sendOrganizationInvitationEmail", () => {
     role: "admin",
     acceptUrl,
     invitationId: 55,
+    invitedAt: new Date("2026-11-27T10:00:00.000Z"),
   };
+  const idempotencyKey = `org-invitation/55/${Date.parse("2026-11-27T10:00:00.000Z")}`;
 
   // Render the real template: the escaping is done by React when the email is rendered.
   beforeEach(() => {
@@ -547,7 +549,7 @@ describe("sendOrganizationInvitationEmail", () => {
         to: "invitee@example.com",
         subject: "You're invited to join Acme & <Co> on Hust",
       }),
-      { idempotencyKey: "org-invitation/55" },
+      { idempotencyKey },
     );
   });
 
@@ -571,7 +573,7 @@ describe("sendOrganizationInvitationEmail", () => {
     );
   });
 
-  it("uses the same idempotency key on every retry of one invitation", async () => {
+  it("keys the send on the invitation id and creation time, the same key on every retry", async () => {
     mockSend
       .mockResolvedValueOnce({ data: null, error: { name: "internal_server_error", message: "upstream", statusCode: 500 } })
       .mockResolvedValueOnce({ data: { id: "invite_2" }, error: null });
@@ -580,7 +582,7 @@ describe("sendOrganizationInvitationEmail", () => {
     expect(await promise).toEqual({ id: "invite_2" });
     expect(mockSend).toHaveBeenCalledTimes(2);
     for (const call of mockSend.mock.calls) {
-      expect(call[1]).toEqual({ idempotencyKey: "org-invitation/55" });
+      expect(call[1]).toEqual({ idempotencyKey });
     }
   });
 });

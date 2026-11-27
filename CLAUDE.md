@@ -85,7 +85,7 @@ Turborepo with `apps/*` and `packages/*` workspaces. All packages use `@ever-hus
 - **`packages/ui/`** — ShadCN components exported as `@ever-hust/ui/<component-name>`
 - **`packages/stripe/`** — Stripe checkout, portal, webhook parsing, plan definitions
 - **`packages/jobs-api/`** — Ever Jobs external API client with circuit breaker + retry
-- **`packages/email/`** — React Email templates (welcome, job alert, subscription, verification, password reset) + Resend sender
+- **`packages/email/`** — React Email templates (welcome, job alert, subscription, verification, password reset, organization invitation) + Resend sender
 - **`packages/triggers/`** — Trigger.dev scheduled tasks (job sync, alerts, cleanup)
 - **`packages/supabase/`** — Supabase client for Realtime + Storage (`uploadFile` and `getPublicUrl` for the public `user-uploads` bucket, `uploadPrivateFile` / `downloadFile` for the private `cvs` bucket, `cvStorageObject`, `deleteFile`, `deleteUserFiles`)
 - **`packages/cv-parser/`** — CV/resume parsing logic
@@ -171,6 +171,7 @@ All marketing pages include JSON-LD structured data: `Organization` (landing), `
 - **Service worker**: Includes `push` and `notificationclick` event handlers for Web Push notifications, offline caching with precached `/offline` page
 - **Email verification**: BetterAuth `emailVerification` config for email/password signups only; OAuth providers are trusted
 - **Auth emails**: The verification and password reset emails are rendered by React Email templates in `packages/email`, which escape the user name (sign-up accepts any name, and a reset can be requested for any address that has an account); never build them as raw HTML strings. The reset, verification and welcome emails take the greeting from `emailGreetingName` (`packages/auth/src/email-greeting-name.ts`): "there" until the address is verified, so a sign-up name such as "restore your account at evil.example" never reaches an inbox the signer does not own; for a verified user, the trimmed name capped at 100 characters, or the email local part when the name is blank
+- **Organization invitations**: `POST /api/organizations/[orgId]/members` stores the invitation, then emails the accept link (`<app>/organizations/invitations/<token>`) with `sendOrganizationInvitationEmail` (Resend idempotency key `org-invitation/<id>/<createdAt ms>`) and answers 201 `{ invitation, emailSent, inviteUrl }`. A failed send never fails the invite, and its log line never carries the token. An inviter without a verified email (a guest) gets no email sent on their behalf. The org page says "Invitation sent" only when `emailSent` is true; otherwise it shows the invite link with a copy button. The org name and inviter name are inviter-chosen text going to an address that did not ask for it: the template escapes them, and the subject collapses whitespace and control characters to one space
 - **Rate limit UX**: Global `RateLimitInterceptor` patches `window.fetch` to show toast on 429 responses
 
 ### Custom Hooks
