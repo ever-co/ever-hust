@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { parseHiddenJobIds } from "../lib/hook-utils";
+import { responseErrorMessage } from "../lib/response-error";
+
+const HIDE_FAILED = "Failed to hide job";
 
 /**
  * Hook to manage hidden jobs for the current user.
@@ -47,7 +50,12 @@ export function useHiddenJobs() {
           next.delete(jobId);
           return next;
         });
-        toast.error("Failed to hide job");
+        // A 409 says why, e.g. the job is tracked as an application
+        toast.error(
+          res.status === 409
+            ? await responseErrorMessage(res, HIDE_FAILED)
+            : HIDE_FAILED,
+        );
       } else {
         toast.success("Job hidden");
       }
@@ -57,7 +65,7 @@ export function useHiddenJobs() {
         next.delete(jobId);
         return next;
       });
-      toast.error("Failed to hide job");
+      toast.error(HIDE_FAILED);
     }
   }, []);
 

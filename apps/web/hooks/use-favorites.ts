@@ -4,6 +4,9 @@ import { useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toggleSetMember } from "../lib/hook-utils";
+import { responseErrorMessage } from "../lib/response-error";
+
+const FAVORITE_FAILED = "Failed to update favorite";
 
 /**
  * Hook for managing the user's favorited jobs.
@@ -35,7 +38,14 @@ export function useFavorites() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobId }),
       });
-      if (!res.ok) throw new Error("Failed to update favorite");
+      if (!res.ok) {
+        // A 409 says why, e.g. the job is tracked as an application
+        throw new Error(
+          res.status === 409
+            ? await responseErrorMessage(res, FAVORITE_FAILED)
+            : FAVORITE_FAILED,
+        );
+      }
       return (await res.json()) as { jobId: number; favorited: boolean };
     },
     onMutate: async (jobId: number) => {
@@ -47,12 +57,12 @@ export function useFavorites() {
       );
       return { prev };
     },
-    onError: (_err, _jobId, context) => {
+    onError: (err, _jobId, context) => {
       // Rollback optimistic update
       if (context?.prev) {
         queryClient.setQueryData(["favorites"], context.prev);
       }
-      toast.error("Failed to update favorite");
+      toast.error(err.message || FAVORITE_FAILED);
     },
     onSuccess: (data) => {
       // Reconcile with server truth

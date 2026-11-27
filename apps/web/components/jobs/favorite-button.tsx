@@ -5,6 +5,9 @@ import { Button } from "@ever-hust/ui/button";
 import { Heart } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@ever-hust/ui/lib/utils";
+import { responseErrorMessage } from "@/lib/response-error";
+
+const FAVORITE_FAILED = "Failed to update favorite";
 
 interface FavoriteButtonProps {
   jobId: number;
@@ -70,11 +73,16 @@ export function FavoriteButton({ jobId, className }: FavoriteButtonProps) {
       } else {
         // Revert on error
         setIsFavorited(prev);
-        toast.error("Failed to update favorite");
+        // A 409 says why, e.g. the job is tracked as an application
+        toast.error(
+          res.status === 409
+            ? await responseErrorMessage(res, FAVORITE_FAILED)
+            : FAVORITE_FAILED,
+        );
       }
     } catch {
       setIsFavorited(prev);
-      toast.error("Failed to update favorite");
+      toast.error(FAVORITE_FAILED);
     } finally {
       setIsLoading(false);
     }
