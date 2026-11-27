@@ -11,9 +11,10 @@
 jest.mock("@ever-hust/db", () => ({ db: {}, users: {} }));
 jest.mock("drizzle-orm", () => ({ eq: jest.fn() }));
 jest.mock("@ever-hust/supabase/storage", () => ({
-  uploadFile: jest.fn(),
+  CV_BUCKET: "cvs",
+  uploadPrivateFile: jest.fn(),
   deleteFile: jest.fn(),
-  storagePathFromPublicUrl: () => null,
+  cvStorageObject: () => null,
 }));
 jest.mock("../get-session-user", () => ({
   requireSessionUser: async () => {
