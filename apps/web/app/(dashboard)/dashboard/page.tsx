@@ -12,6 +12,7 @@ import { useHiddenJobs } from "@/hooks/use-hidden-jobs";
 import { useRealtimeJobs, type RealtimeJob } from "@/hooks/use-realtime-jobs";
 import { useKeyboardShortcuts, getChatShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { toast } from "sonner";
+import { responseErrorMessage } from "@/lib/response-error";
 
 // Lazy-load components that are only rendered conditionally
 const SalaryInsightsCard = dynamic(
@@ -209,7 +210,12 @@ export default function DashboardPage() {
         body: JSON.stringify({ jobId }),
       });
       if (!res.ok) {
-        toast.error("Failed to update favorite");
+        // A 409 says why, e.g. the job is tracked as an application
+        toast.error(
+          res.status === 409
+            ? await responseErrorMessage(res, "Failed to update favorite")
+            : "Failed to update favorite",
+        );
         return;
       }
       const data = (await res.json()) as {
