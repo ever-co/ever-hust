@@ -4,6 +4,7 @@ import type { NextResponse } from "next/server";
 import { requireSessionUser } from "../../../../lib/get-session-user";
 import { applyRateLimit } from "../../../../lib/rate-limit";
 import { apiSuccess, apiError, apiBadRequest } from "../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../lib/id-param";
 
 // GET /api/evaluations/[jobId] — fetch THIS user's persisted job-fit evaluation (spec #3).
 // Read-only; the evaluation is produced + persisted by the evaluateJob AI tool.
@@ -23,8 +24,8 @@ export async function GET(
   if (rateLimited) return rateLimited;
 
   const { jobId: jobIdRaw } = await params;
-  const jobId = Number(jobIdRaw);
-  if (!Number.isInteger(jobId) || jobId <= 0) {
+  const jobId = parsePositiveIntId(jobIdRaw);
+  if (jobId === null) {
     return apiBadRequest("Invalid job id");
   }
 

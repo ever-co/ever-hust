@@ -11,14 +11,15 @@ import {
   apiError,
   safeJsonParse,
 } from "../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../lib/id-param";
 
 type RouteContext = { params: Promise<{ orgId: string }> };
 
 // GET /api/organizations/[orgId]/ai-config
 export async function GET(_req: Request, context: RouteContext) {
   const { orgId: orgIdStr } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
 
@@ -63,8 +64,8 @@ export async function GET(_req: Request, context: RouteContext) {
 // PUT /api/organizations/[orgId]/ai-config
 export async function PUT(req: Request, context: RouteContext) {
   const { orgId: orgIdStr } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
 

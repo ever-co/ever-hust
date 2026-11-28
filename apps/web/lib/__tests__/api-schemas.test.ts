@@ -7,6 +7,7 @@ import {
   chatRequestSchema,
   checkoutSchema,
   favoriteToggleSchema,
+  hiddenJobToggleSchema,
   profilePatchSchema,
   alertCreateSchema,
   alertPatchSchema,
@@ -259,6 +260,26 @@ describe("favoriteToggleSchema", () => {
   it("rejects non-integer", () => {
     const result = favoriteToggleSchema.safeParse({ jobId: 1.5 });
     expect(result.success).toBe(false);
+  });
+
+  // jobs.id is a Postgres integer: a larger value reached the query and failed there with 500.
+  it("accepts the largest Postgres integer and rejects one past it", () => {
+    expect(favoriteToggleSchema.safeParse({ jobId: 2147483647 }).success).toBe(true);
+    expect(favoriteToggleSchema.safeParse({ jobId: 2147483648 }).success).toBe(false);
+  });
+});
+
+describe("int4 id bounds", () => {
+  it("hiddenJobToggleSchema rejects a jobId past the Postgres integer range", () => {
+    expect(hiddenJobToggleSchema.safeParse({ jobId: 2147483647 }).success).toBe(true);
+    expect(hiddenJobToggleSchema.safeParse({ jobId: 2147483648 }).success).toBe(false);
+  });
+
+  it("alertPatchSchema and alertDeleteSchema reject an id past the Postgres integer range", () => {
+    expect(alertPatchSchema.safeParse({ id: 2147483647 }).success).toBe(true);
+    expect(alertPatchSchema.safeParse({ id: 2147483648 }).success).toBe(false);
+    expect(alertDeleteSchema.safeParse({ id: 2147483647 }).success).toBe(true);
+    expect(alertDeleteSchema.safeParse({ id: 2147483648 }).success).toBe(false);
   });
 });
 

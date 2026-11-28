@@ -16,6 +16,7 @@ import {
   apiForbidden,
   safeJsonParse,
 } from "../../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../../lib/id-param";
 
 type RouteContext = { params: Promise<{ orgId: string; userId: string }> };
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -102,8 +103,8 @@ export async function PATCH(
   context: RouteContext
 ) {
   const { orgId: orgIdStr, userId: targetUserId } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
   if (!targetUserId || typeof targetUserId !== "string" || targetUserId.length > 100) {
@@ -187,8 +188,8 @@ export async function DELETE(
   context: RouteContext
 ) {
   const { orgId: orgIdStr, userId: targetUserId } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
   if (!targetUserId || typeof targetUserId !== "string" || targetUserId.length > 100) {
