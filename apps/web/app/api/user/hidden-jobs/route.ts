@@ -1,5 +1,5 @@
 import { db, userJobs } from "@ever-hust/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireSessionUser } from "../../../../lib/get-session-user";
 import { applyRateLimit } from "../../../../lib/rate-limit";
@@ -10,6 +10,13 @@ import {
   apiError,
   safeJsonParse,
 } from "../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../lib/id-param";
+
+// The apply tool marks a job's user_jobs row 'applied' with appliedAt; the profile's applied
+// list and the inbox job matching read it. Hiding must never overwrite it (and the unhide
+// DELETE would then remove the row).
+const APPLIED_JOB_MESSAGE =
+  "You applied to this job, so it stays in your applications and can't be hidden.";
 
 /**
  * POST /api/user/hidden-jobs — Hide a job for the user
@@ -70,7 +77,7 @@ export async function POST(req: Request) {
   const { jobId } = validation.data;
 
   try {
-    await db
+    const hidden = await db
       .insert(userJobs)
       .values({
         userId: user.id,
@@ -82,8 +89,13 @@ export async function POST(req: Request) {
       .onConflictDoUpdate({
         target: [userJobs.userId, userJobs.jobId],
         set: { status: "hidden", updatedAt: new Date() },
-      });
+        // Don't overwrite "applied" status: it would lose the application tracking
+        setWhere: ne(userJobs.status, "applied"),
+      })
+      .returning({ id: userJobs.id });
 
+    // No row returned: the existing row is 'applied' and was left as it was
+    if (hidden.length === 0) return apiError(APPLIED_JOB_MESSAGE, 409);
     return apiSuccess({ hidden: true, jobId });
   } catch (err) {
     console.error(
@@ -106,9 +118,8 @@ export async function DELETE(req: Request) {
   if (rateLimited) return rateLimited;
 
   const url = new URL(req.url);
-  const rawJobId = url.searchParams.get("jobId");
-  const jobId = Number(rawJobId);
-  if (!rawJobId || !Number.isFinite(jobId) || jobId < 1) {
+  const jobId = parsePositiveIntId(url.searchParams.get("jobId"));
+  if (jobId === null) {
     return apiBadRequest("Invalid or missing jobId query parameter");
   }
 

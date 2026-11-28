@@ -8,8 +8,10 @@ import {
   apiSuccess,
   apiBadRequest,
   apiError,
+  isJsonObject,
   safeJsonParse,
 } from "../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../lib/id-param";
 
 // PATCH /api/user/applications/[id] — move an application to a new pipeline stage (spec #2).
 export async function PATCH(
@@ -28,14 +30,17 @@ export async function PATCH(
   if (rateLimited) return rateLimited;
 
   const { id: idRaw } = await params;
-  const id = Number(idRaw);
-  if (!Number.isInteger(id) || id <= 0) {
+  const id = parsePositiveIntId(idRaw);
+  if (id === null) {
     return apiBadRequest("Invalid application id");
   }
 
   const jsonResult = await safeJsonParse(req);
   if (!jsonResult.ok) return jsonResult.response;
-  const body = jsonResult.data as { stage?: unknown };
+  if (!isJsonObject(jsonResult.data)) {
+    return apiBadRequest("Request body must be a JSON object");
+  }
+  const body = jsonResult.data;
   if (typeof body.stage !== "string" || !isValidStage(body.stage)) {
     return apiBadRequest("Invalid pipeline stage");
   }
