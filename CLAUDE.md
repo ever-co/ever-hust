@@ -127,7 +127,7 @@ For a member of an organization with an active AI config, the chat route passes 
 
 Tables defined in `packages/db/src/schema/`: `users`, `sessions`, `accounts`, `verifications` (BetterAuth), `jobs`, `userJobs` (favorites), `userAlerts`, `chatSessions`, `chatMessages`, `agentInstances`, `subscriptions`, `applications`, `pushSubscriptions`, `referrals`, `referralCredits`, `apiKeys`, `organizations`, `organizationMembers`, `organizationInvitations`, `brandingConfigs`, `organizationAiConfigs`, `stripeWebhookEvents`.
 
-A `userJobs` row with status `applied` (written by the apply tool with `appliedAt`; the profile's applied list and the inbox job matching read it) is never overwritten or deleted by the favorite and hide toggles: `POST /api/user/favorites` and `POST /api/user/hidden-jobs` answer 409 for it and change nothing, and `DELETE /api/user/favorites` deletes only a `favorited` row.
+A `userJobs` row with status `applied` (written by the apply tool with `appliedAt`; the profile's applied list and the inbox job matching read it) is never overwritten or deleted by the favorite and hide toggles: `POST /api/user/favorites` and `POST /api/user/hidden-jobs` answer 409 for it and change nothing, and `DELETE /api/user/favorites` deletes only a `favorited` row. The chat `favoriteJob` tool (`packages/ai/src/tools/favorite-job.ts`) reads the row with `.for("update")` inside its transaction, as the favorites POST does, and for an `applied` row writes nothing and answers `favorited: false` with the same message as that 409.
 
 The DB client (`packages/db/src/client.ts`) is a lazy singleton using a Proxy pattern — it only connects when first accessed.
 
