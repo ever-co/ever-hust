@@ -7,6 +7,11 @@ import { favoriteToggleSchema, parseBody } from "../../../../lib/api-schemas";
 import { applyRateLimit } from "../../../../lib/rate-limit";
 import { apiSuccess, apiBadRequest, apiError, safeJsonParse } from "../../../../lib/api-response";
 
+// The apply tool marks a job's user_jobs row 'applied' with appliedAt; the profile's applied
+// list and the inbox job matching read it. A favorite toggle must never overwrite or delete it.
+const APPLIED_JOB_MESSAGE =
+  "You applied to this job, so it stays in your applications and can't be added to favorites.";
+
 // GET /api/user/favorites - Get user's favorited job IDs
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function GET(req: Request) {
@@ -63,16 +68,22 @@ export async function POST(req: Request) {
   try {
     // Wrap in transaction to prevent TOCTOU race on concurrent toggle requests
     const favorited = await db.transaction(async (tx) => {
+      // FOR UPDATE: an apply that marks this row 'applied' at the same moment is waited for and
+      // then seen, instead of being overwritten (or deleted) by the update below
       const existing = await tx
         .select({ id: userJobs.id, status: userJobs.status })
         .from(userJobs)
         .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)))
-        .limit(1);
+        .limit(1)
+        .for("update");
+
+      // Don't overwrite "applied" status: it would lose the application tracking
+      if (existing.length > 0 && existing[0]!.status === "applied") {
+        return null;
+      }
 
       if (existing.length > 0 && existing[0]!.status === "favorited") {
-        await tx
-          .delete(userJobs)
-          .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)));
+        await tx.delete(userJobs).where(eq(userJobs.id, existing[0]!.id));
         return false;
       }
 
@@ -80,7 +91,7 @@ export async function POST(req: Request) {
         await tx
           .update(userJobs)
           .set({ status: "favorited" as const, updatedAt: new Date() })
-          .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)));
+          .where(eq(userJobs.id, existing[0]!.id));
       } else {
         await tx.insert(userJobs).values({
           userId,
@@ -91,6 +102,7 @@ export async function POST(req: Request) {
       return true;
     });
 
+    if (favorited === null) return apiError(APPLIED_JOB_MESSAGE, 409);
     return apiSuccess({ jobId, favorited });
   } catch (err) {
     console.error("[api/user/favorites] POST failed:", err instanceof Error ? err.message : err);
@@ -121,9 +133,16 @@ export async function DELETE(req: Request) {
   const { jobId } = validation.data;
 
   try {
+    // Only a favorite: a row with another status (e.g. 'applied') is not this route's to delete
     await db
       .delete(userJobs)
-      .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)));
+      .where(
+        and(
+          eq(userJobs.userId, userId),
+          eq(userJobs.jobId, jobId),
+          eq(userJobs.status, "favorited"),
+        ),
+      );
     return apiSuccess({ jobId, favorited: false });
   } catch (err) {
     console.error("[api/user/favorites] DELETE failed:", err instanceof Error ? err.message : err);

@@ -6,6 +6,7 @@ import { WelcomeEmail } from "./templates/welcome";
 import { SubscriptionConfirmedEmail } from "./templates/subscription-confirmed";
 import { VerificationEmail } from "./templates/verification-email";
 import { PasswordResetEmail } from "./templates/password-reset";
+import { OrganizationInvitationEmail } from "./templates/organization-invitation";
 import type React from "react";
 import { APP_NAME } from "@ever-hust/utils";
 
@@ -412,4 +413,58 @@ export async function sendPasswordResetEmail({
 
     return data;
   }, "sendPasswordResetEmail");
+}
+
+// ── Organization Invitation ─────────────────────────────────────────────────
+
+interface SendOrganizationInvitationEmailParams {
+  to: string;
+  orgName: string;
+  inviterName: string;
+  role: string;
+  /** `<app>/organizations/invitations/<token>`: the token is the secret, never log this URL. */
+  acceptUrl: string;
+  /**
+   * The invitation row id and creation time build the idempotency key, so every retry of one
+   * invitation sends one email, and the same id in another database (stage, a reset self-host)
+   * within Resend's 24 h key window is not taken for a replay.
+   */
+  invitationId: number;
+  invitedAt: Date;
+}
+
+/**
+ * The org name and the inviter name are rendered by the React Email template, which escapes
+ * them. In the subject (plain text) any run of whitespace or control characters becomes one
+ * space, so a name cannot break the subject onto a new line.
+ */
+export async function sendOrganizationInvitationEmail({
+  to,
+  orgName,
+  inviterName,
+  role,
+  acceptUrl,
+  invitationId,
+  invitedAt,
+}: SendOrganizationInvitationEmailParams) {
+  const element = OrganizationInvitationEmail({
+    orgName,
+    inviterName,
+    role,
+    acceptUrl,
+  }) as React.ReactElement;
+
+  const html = await render(element);
+  const subjectOrgName = orgName.replace(/[\s\u0000-\u001f\u007f]+/g, " ").trim();
+  const subject = `You're invited to join ${subjectOrgName} on ${APP_NAME}`;
+
+  return withRetry(
+    () =>
+      sendOnce(
+        { from: EMAIL_FROM, to, subject, html },
+        "Failed to send organization invitation email",
+        `org-invitation/${invitationId}/${invitedAt.getTime()}`,
+      ),
+    "sendOrganizationInvitationEmail",
+  );
 }

@@ -9,6 +9,7 @@ import {
   apiNotFound,
   apiError,
 } from "../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../lib/id-param";
 
 export async function GET(
   req: NextRequest,
@@ -25,9 +26,9 @@ export async function GET(
     return apiBadRequest("Job ID is required");
   }
 
-  const jobId = Number(id);
+  const jobId = parsePositiveIntId(id);
 
-  if (isNaN(jobId) || jobId <= 0 || !Number.isInteger(jobId)) {
+  if (jobId === null) {
     return apiBadRequest("Invalid job ID");
   }
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { INT4_MAX } from "./id-param";
 
 // === Chat Route ===
 export const chatRequestSchema = z.object({
@@ -67,7 +68,7 @@ export const alertCreateSchema = z.object({
 });
 
 export const alertPatchSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(INT4_MAX),
   isActive: z.boolean().optional(),
   frequency: z.enum(["daily", "twice_daily", "weekly"]).optional(),
   // Never stored: the route answers 400 when it differs from the account email.
@@ -79,7 +80,7 @@ export const alertPatchSchema = z.object({
 export type AlertCriteria = z.infer<typeof alertCreateSchema>["criteria"];
 
 export const alertDeleteSchema = z.object({
-  id: z.number().int().positive(),
+  id: z.number().int().positive().max(INT4_MAX),
 });
 
 // === Profile PATCH Route ===
@@ -123,12 +124,12 @@ export const checkoutSchema = z.object({
 
 // === Favorites Route ===
 export const favoriteToggleSchema = z.object({
-  jobId: z.number().int().positive(),
+  jobId: z.number().int().positive().max(INT4_MAX),
 });
 
 // === Hidden Jobs Route ===
 export const hiddenJobToggleSchema = z.object({
-  jobId: z.number().int().positive(),
+  jobId: z.number().int().positive().max(INT4_MAX),
 });
 
 // === Job Search Query Params ===

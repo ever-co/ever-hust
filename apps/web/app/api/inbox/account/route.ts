@@ -4,7 +4,7 @@ import type { NextResponse } from "next/server";
 import { encryptApiKey } from "@ever-hust/ai/crypto";
 import { requireSessionUser } from "../../../../lib/get-session-user";
 import { applyRateLimit } from "../../../../lib/rate-limit";
-import { apiSuccess, apiBadRequest, apiError, safeJsonParse } from "../../../../lib/api-response";
+import { apiSuccess, apiBadRequest, apiError, isJsonObject, safeJsonParse } from "../../../../lib/api-response";
 import { loadAccount, publicAccount } from "../../../../lib/inbox";
 import { presetForEmail, verifyConnection, type MailConfig } from "../../../../lib/mail";
 import { assertPublicMailHost, MailHostRefusedError } from "../../../../lib/mail-host-guard";
@@ -39,7 +39,10 @@ export async function POST(req: Request) {
 
   const jsonResult = await safeJsonParse(req);
   if (!jsonResult.ok) return jsonResult.response;
-  const b = jsonResult.data as Record<string, unknown>;
+  if (!isJsonObject(jsonResult.data)) {
+    return apiBadRequest("Request body must be a JSON object");
+  }
+  const b = jsonResult.data;
 
   const email = typeof b.email === "string" ? b.email.trim() : "";
   const password = typeof b.password === "string" ? b.password : "";

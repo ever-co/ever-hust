@@ -13,6 +13,7 @@ import {
   Trash2,
   Clock,
   ArrowLeft,
+  Copy,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -111,6 +112,8 @@ export default function OrgDetailPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "member">("member");
   const [inviting, setInviting] = useState(false);
+  // Shown when the invitation email did not go out: the link to share by hand.
+  const [inviteLink, setInviteLink] = useState<{ email: string; url: string } | null>(null);
 
   // Action states
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
@@ -175,6 +178,7 @@ export default function OrgDetailPage() {
       return;
     }
     setInviting(true);
+    setInviteLink(null);
     try {
       const res = await fetch(`/api/organizations/${orgId}/members`, {
         method: "POST",
@@ -182,7 +186,18 @@ export default function OrgDetailPage() {
         body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
       });
       if (res.ok) {
-        toast.success(`Invitation sent to ${inviteEmail.trim()}`);
+        const data = (await res.json().catch(() => ({}))) as {
+          emailSent?: boolean;
+          inviteUrl?: string;
+        };
+        if (data.emailSent === true) {
+          toast.success(`Invitation sent to ${email}`);
+        } else {
+          if (data.inviteUrl) setInviteLink({ email, url: data.inviteUrl });
+          toast.warning(
+            `Invitation created for ${email}, but the email could not be sent. Share the invite link with them.`
+          );
+        }
         setInviteEmail("");
         setInviteRole("member");
         await loadOrg();
@@ -196,6 +211,16 @@ export default function OrgDetailPage() {
       setInviting(false);
     }
   }, [inviteEmail, inviteRole, orgId, loadOrg]);
+
+  const handleCopyInviteLink = useCallback(async () => {
+    if (!inviteLink) return;
+    try {
+      await navigator.clipboard.writeText(inviteLink.url);
+      toast.success("Invite link copied to clipboard");
+    } catch {
+      toast.error("Failed to copy link");
+    }
+  }, [inviteLink]);
 
   const handleRemoveMember = useCallback(
     async (userId: string) => {
@@ -445,7 +470,8 @@ export default function OrgDetailPage() {
                 Invite Member
               </h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Send an invitation email to add a new team member.
+                Send an invitation email to add a new team member. If the email
+                cannot be sent, you get a link to share with them instead.
               </p>
               <div className="mt-3 flex flex-col gap-3 sm:flex-row">
                 <Input
@@ -497,6 +523,34 @@ export default function OrgDetailPage() {
                   </Button>
                 </div>
               </div>
+              {inviteLink && (
+                <div
+                  className="mt-3 rounded-md border border-dashed p-3"
+                  data-testid="invite-link"
+                >
+                  <p className="text-xs text-muted-foreground">
+                    The invitation email to {inviteLink.email} could not be
+                    sent. Share this link with them; it expires in 7 days.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Input
+                      readOnly
+                      value={inviteLink.url}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="flex-1 font-mono text-xs"
+                      aria-label={`Invite link for ${inviteLink.email}`}
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={handleCopyInviteLink}
+                      className="shrink-0"
+                    >
+                      <Copy className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                      Copy link
+                    </Button>
+                  </div>
+                </div>
+              )}
             </Card>
           )}
 

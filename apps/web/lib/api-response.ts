@@ -116,6 +116,15 @@ export async function safeJsonParse(
   }
 }
 
+/**
+ * True when a parsed JSON body is an object: not `null`, an array, a string, a number or a
+ * boolean. safeJsonParse accepts all of those, so a route that reads fields off the body checks
+ * this first and answers 400 instead of throwing on `null`.
+ */
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** 429 Too Many Requests */
 export function apiRateLimited(retryAfterSeconds: number) {
   return NextResponse.json(
