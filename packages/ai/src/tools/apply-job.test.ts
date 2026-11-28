@@ -24,6 +24,7 @@ type MockCall = {
   values?: Record<string, unknown>;
   onConflictDoUpdate?: { target: unknown; set: Record<string, unknown> };
   query?: MockSql;
+  where?: unknown;
 };
 
 const mockDb: {
@@ -41,6 +42,7 @@ const mockDb: {
 
 jest.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ eq: [column, value] }),
+  ne: (column: unknown, value: unknown) => ({ ne: [column, value] }),
   and: (...conditions: unknown[]) => ({ and: conditions }),
   sql: (strings: TemplateStringsArray, ...values: unknown[]): MockSql => ({
     strings: [...strings],
@@ -81,12 +83,16 @@ jest.mock("@ever-hust/db", () => {
   const queries = (scope: "db" | "tx") => ({
     select: () => ({
       from: (from: Table) => {
+        let where: unknown;
         const query = {
-          where: () => query,
+          where: (condition: unknown) => {
+            where = condition;
+            return query;
+          },
           limit: () => query,
           for: () => query,
           ...settles(
-            () => ({ scope, op: "select", table: from.mockTable }),
+            () => ({ scope, op: "select", table: from.mockTable, where }),
             () => selectRows(from.mockTable),
           ),
         };
@@ -267,6 +273,23 @@ describe("applyJobTool", () => {
       "tx advisory lock",
       "tx select applications",
     ]);
+  });
+
+  it("leaves failed applications out of the duplicate select itself, not after limit(1)", async () => {
+    await run({ userId: "u1", jobId: 7 });
+
+    // With the status checked after `limit(1)`, an older failed row came back first and hid
+    // the user's active application, so a second apply went through.
+    const check = mockDb.calls.find(
+      (call) => call.op === "select" && call.table === "applications",
+    )!;
+    expect(check.where).toEqual({
+      and: [
+        { eq: ["applications.userId", "u1"] },
+        { eq: ["applications.jobId", 7] },
+        { ne: ["applications.status", "failed"] },
+      ],
+    });
   });
 
   it("locks (user, job) inside the transaction before the duplicate check (T-2926)", async () => {

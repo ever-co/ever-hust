@@ -251,6 +251,38 @@ suite("concurrent applyJob calls for one job against Postgres (opt-in)", () => {
     30_000,
   );
 
+  it("an older failed application does not let a second apply through", async () => {
+    // A failed application may be retried, but it must not hide the retry: with the status
+    // checked after `limit(1)`, the failed row came back first and every apply went through.
+    const [failed] = await db
+      .insert(applications)
+      .values({ userId, jobId, status: "failed" })
+      .returning({ id: applications.id });
+
+    const together = await Promise.all([
+      applyJob(userId, jobId),
+      applyJob(userId, jobId),
+    ]);
+    const later = await applyJob(userId, jobId);
+
+    const active = (await applicationIds()).filter((id) => id !== failed!.id);
+    expect(active).toHaveLength(1);
+    expect(await agentInstanceCount()).toBe(1);
+    expect(together.filter((result) => result.applied)).toEqual([
+      expect.objectContaining({ applicationId: active[0] }),
+    ]);
+    expect([...together.filter((result) => !result.applied), later]).toEqual([
+      expect.objectContaining({
+        error: DUPLICATE,
+        existingApplicationId: active[0],
+      }),
+      expect.objectContaining({
+        error: DUPLICATE,
+        existingApplicationId: active[0],
+      }),
+    ]);
+  }, 30_000);
+
   it("two applies started together (one step's parallel tool calls) create one application", async () => {
     for (let round = 0; round < 5; round++) {
       await db.delete(applications).where(eq(applications.userId, userId));

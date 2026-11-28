@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@ever-hust/db";
 import { users, jobs, applications, agentInstances, userJobs } from "@ever-hust/db";
 import { proOnlyToolError } from "../payments";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, ne, sql } from "drizzle-orm";
 
 export const applyJobTool = tool({
   description:
@@ -81,13 +81,21 @@ export const applyJobTool = tool({
         sql`select pg_advisory_xact_lock(hashtext('apply-job:' || ${userId}), ${jobId})`,
       );
 
+      // Skip failed applications in SQL, not after `limit(1)`: an older failed row came back
+      // first and hid the active one, so every apply after it went through.
       const existingApp = await tx
-        .select({ id: applications.id, status: applications.status })
+        .select({ id: applications.id })
         .from(applications)
-        .where(and(eq(applications.userId, userId), eq(applications.jobId, jobId)))
+        .where(
+          and(
+            eq(applications.userId, userId),
+            eq(applications.jobId, jobId),
+            ne(applications.status, "failed"),
+          ),
+        )
         .limit(1);
 
-      if (existingApp.length > 0 && existingApp[0]!.status !== "failed") {
+      if (existingApp.length > 0) {
         return {
           duplicate: true as const,
           existingApplicationId: existingApp[0]!.id,
