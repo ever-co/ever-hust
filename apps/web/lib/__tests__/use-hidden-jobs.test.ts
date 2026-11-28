@@ -45,6 +45,7 @@ jest.mock("react", () => ({
   useCallback: (fn: unknown) => fn,
 }));
 
+import { toast } from "sonner";
 import { GET } from "../../app/api/user/hidden-jobs/route";
 import { useHiddenJobs } from "../../hooks/use-hidden-jobs";
 
@@ -77,6 +78,7 @@ describe("useHiddenJobs loads the saved hidden jobs", () => {
     mockState = undefined;
     mockEffects = [];
     mockSavedRows = [];
+    jest.clearAllMocks();
   });
 
   afterEach(() => {
@@ -141,6 +143,24 @@ describe("useHiddenJobs loads the saved hidden jobs", () => {
     ) as unknown as typeof fetch;
     mount();
     await settle();
+    expect(hiddenNow()).toEqual([]);
+  });
+
+  it("a refused hide (409) shows the server's reason and shows the job again", async () => {
+    const reason =
+      "You applied to this job, so it stays in your applications and can't be hidden.";
+    global.fetch = jest.fn(async (_url: string, init?: RequestInit) =>
+      init
+        ? new Response(JSON.stringify({ error: reason }), { status: 409 })
+        : new Response(JSON.stringify({ hiddenJobIds: [] }), { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const { hideJob } = mount();
+    await hideJob(9);
+    await settle();
+
+    expect(toast.error).toHaveBeenCalledWith(reason);
+    expect(toast.success).not.toHaveBeenCalled();
     expect(hiddenNow()).toEqual([]);
   });
 });
