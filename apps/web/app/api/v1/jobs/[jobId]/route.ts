@@ -13,6 +13,7 @@ import {
   apiRateLimited,
   apiError,
 } from "../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../lib/id-param";
 
 // GET /api/v1/jobs/[jobId] - Get single job details (API key or session auth)
 export async function GET(
@@ -50,9 +51,9 @@ export async function GET(
   }
 
   const { jobId } = await params;
-  const jobIdNum = Number(jobId);
+  const jobIdNum = parsePositiveIntId(jobId);
 
-  if (isNaN(jobIdNum) || jobIdNum <= 0 || !Number.isInteger(jobIdNum)) {
+  if (jobIdNum === null) {
     return apiBadRequest("Invalid job ID");
   }
 

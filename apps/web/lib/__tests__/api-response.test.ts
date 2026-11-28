@@ -7,6 +7,7 @@ import {
   apiNotFound,
   apiRateLimited,
   generateRequestId,
+  isJsonObject,
   safeJsonParse,
 } from "../api-response";
 
@@ -331,5 +332,19 @@ describe("safeJsonParse", () => {
     });
     const result = await safeJsonParse(req);
     expect(result.ok).toBe(false);
+  });
+});
+
+// ── isJsonObject ───────────────────────────────────────────────────────
+
+describe("isJsonObject", () => {
+  it("accepts a parsed JSON object", () => {
+    expect(isJsonObject({})).toBe(true);
+    expect(isJsonObject({ stage: "applied" })).toBe(true);
+  });
+
+  // safeJsonParse returns each of these as valid data: a route must not read fields off them.
+  it.each([null, [], ["a"], "text", 5, true, undefined])("rejects %j", (value) => {
+    expect(isJsonObject(value)).toBe(false);
   });
 });

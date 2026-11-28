@@ -138,6 +138,8 @@ API routes in `apps/web/app/api/` follow a consistent pattern:
 - Authenticate with `requireSessionUser()` (throws NextResponse on failure)
 - Apply rate limiting with `applyRateLimit(key, tier)` from `apps/web/lib/rate-limit.ts`. Available tiers: `authenticated` (100 req/min), `public` (20 req/min), `publicHighThroughput` (100 req/min), `chat` (30 req/min), `admin` (60 req/min), `adminWrite` (30 req/min), `export` (5 req/min). Uses in-memory sliding window (per-pod); not yet distributed — see `docs/internal/RATE_LIMITING.md` for the deferred Redis migration of this limiter.
 - Validate request body with Zod schemas from `apps/web/lib/api-schemas.ts`
+- Every table id is a Postgres `integer` (int4). Parse an id from a route segment or query parameter with `parsePositiveIntId` (`apps/web/lib/id-param.ts`), which accepts only `/^[1-9]\d*$/` up to `INT4_MAX` (2147483647) and returns null otherwise, and answer 400 for null before any query; an id in a JSON body is `z.number().int().positive().max(INT4_MAX)`. A larger id or `1.5` used to reach Postgres and come back as a 500
+- `safeJsonParse` returns `null`, arrays and primitives as valid data. A route that reads fields off the body without a Zod schema checks `isJsonObject` (`apps/web/lib/api-response.ts`) first and answers 400 "Request body must be a JSON object"
 - Return errors via `apiBadRequest()` / `apiError()` helpers from `apps/web/lib/api-response.ts` (including the Stripe webhook route, which uses these standardized helpers for consistent error responses)
 - All API responses include default `Cache-Control: private, no-cache, no-store, must-revalidate` headers to prevent sensitive data caching
 - Streaming AI routes set `export const maxDuration = 60` for Vercel

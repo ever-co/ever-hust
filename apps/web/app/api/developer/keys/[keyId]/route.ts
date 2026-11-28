@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { requireSessionUser } from "../../../../../lib/get-session-user";
 import { applyRateLimit } from "../../../../../lib/rate-limit";
 import { apiBadRequest, apiError, apiNotFound } from "../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../lib/id-param";
 
 // DELETE /api/developer/keys/[keyId] - Revoke (soft-delete) an API key
 export async function DELETE(
@@ -22,9 +23,9 @@ export async function DELETE(
   if (rateLimited) return rateLimited;
 
   const { keyId } = await params;
-  const keyIdNum = Number(keyId);
+  const keyIdNum = parsePositiveIntId(keyId);
 
-  if (isNaN(keyIdNum) || keyIdNum <= 0 || !Number.isInteger(keyIdNum)) {
+  if (keyIdNum === null) {
     return apiBadRequest("Invalid API key ID");
   }
 

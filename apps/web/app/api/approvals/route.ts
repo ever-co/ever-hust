@@ -9,9 +9,10 @@ import {
   apiError,
   safeJsonParse,
 } from "../../../lib/api-response";
+import { INT4_MAX } from "../../../lib/id-param";
 
 const approvalDecisionSchema = z.object({
-  gateId: z.number().int().positive(),
+  gateId: z.number().int().positive().max(INT4_MAX),
   decision: z.enum(["approved", "denied"]),
 });
 
