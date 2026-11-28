@@ -27,20 +27,28 @@ export const captureWritingStyleTool = tool({
     if (!userId) return { captured: false, error: "Not authenticated." };
     try {
       const fingerprint = extractStyleFingerprint(samples);
-      const rows = await db
-        .select({ preferences: users.preferences })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-      if (rows.length === 0) return { captured: false, error: "User not found." };
+      // Read the row under FOR UPDATE in the transaction that writes it back: the AI SDK runs
+      // the tool calls of one step in parallel, and a concurrent writer must not lose its keys
+      // to a stale copy of the JSON.
+      const found = await db.transaction(async (tx) => {
+        const rows = await tx
+          .select({ preferences: users.preferences })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1)
+          .for("update");
+        if (rows.length === 0) return false;
 
-      const prefs = (rows[0]!.preferences ?? {}) as Record<string, unknown>;
-      // Persist the fingerprint only — never the raw samples.
-      const newPrefs = { ...prefs, writingStyle: fingerprint };
-      await db
-        .update(users)
-        .set({ preferences: newPrefs, updatedAt: new Date() })
-        .where(eq(users.id, userId));
+        const prefs = (rows[0]!.preferences ?? {}) as Record<string, unknown>;
+        // Persist the fingerprint only — never the raw samples.
+        const newPrefs = { ...prefs, writingStyle: fingerprint };
+        await tx
+          .update(users)
+          .set({ preferences: newPrefs, updatedAt: new Date() })
+          .where(eq(users.id, userId));
+        return true;
+      });
+      if (!found) return { captured: false, error: "User not found." };
 
       return { captured: true, fingerprint };
     } catch (err) {
