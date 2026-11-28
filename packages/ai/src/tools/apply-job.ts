@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@ever-hust/db";
 import { users, jobs, applications, agentInstances, userJobs } from "@ever-hust/db";
 import { proOnlyToolError } from "../payments";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne, sql } from "drizzle-orm";
 
 export const applyJobTool = tool({
   description:
@@ -70,17 +70,32 @@ export const applyJobTool = tool({
     }
 
     // Create agent instance, application record, and update userJobs
-    // inside a transaction to prevent orphaned records on partial failure
-    // and eliminate the TOCTOU race on the duplicate check.
+    // inside a transaction to prevent orphaned records on partial failure.
     const txResult = await db.transaction(async (tx) => {
-      // Duplicate check INSIDE the transaction for atomicity
+      // The duplicate check below is a plain select, which does not block another apply under
+      // READ COMMITTED: two applies for the same job (one step's parallel tool calls, or two
+      // tabs) both found nothing and both inserted. Lock (user, job) first, so the second apply
+      // waits for the first to commit and then sees its application. Held until the
+      // transaction ends (commit or rollback), never left on a pooled connection.
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtext('apply-job:' || ${userId}), ${jobId})`,
+      );
+
+      // Skip failed applications in SQL, not after `limit(1)`: an older failed row came back
+      // first and hid the active one, so every apply after it went through.
       const existingApp = await tx
-        .select({ id: applications.id, status: applications.status })
+        .select({ id: applications.id })
         .from(applications)
-        .where(and(eq(applications.userId, userId), eq(applications.jobId, jobId)))
+        .where(
+          and(
+            eq(applications.userId, userId),
+            eq(applications.jobId, jobId),
+            ne(applications.status, "failed"),
+          ),
+        )
         .limit(1);
 
-      if (existingApp.length > 0 && existingApp[0]!.status !== "failed") {
+      if (existingApp.length > 0) {
         return {
           duplicate: true as const,
           existingApplicationId: existingApp[0]!.id,
