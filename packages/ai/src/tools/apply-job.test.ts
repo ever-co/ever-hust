@@ -7,14 +7,23 @@
  * insert that lands after the select makes the insert hit user_jobs_unique and roll the whole
  * application back. The race itself is proven against Postgres in
  * apps/web/lib/__tests__/apply-job-user-jobs.integration.test.ts.
+ *
+ * Two applies for the same user and job must create ONE application (T-2926). The duplicate
+ * check is a plain select, which does not block under READ COMMITTED, so the transaction takes
+ * an advisory lock on (user, job) before it: the second apply waits for the first to commit and
+ * then sees its application. Proven against Postgres in
+ * apps/web/lib/__tests__/apply-job-duplicate.integration.test.ts.
  */
+
+type MockSql = { strings: string[]; values: unknown[] };
 
 type MockCall = {
   scope: "db" | "tx";
-  op: "select" | "insert" | "update" | "delete";
+  op: "select" | "insert" | "update" | "delete" | "execute";
   table: string;
   values?: Record<string, unknown>;
   onConflictDoUpdate?: { target: unknown; set: Record<string, unknown> };
+  query?: MockSql;
 };
 
 const mockDb: {
@@ -33,6 +42,10 @@ const mockDb: {
 jest.mock("drizzle-orm", () => ({
   eq: (column: unknown, value: unknown) => ({ eq: [column, value] }),
   and: (...conditions: unknown[]) => ({ and: conditions }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]): MockSql => ({
+    strings: [...strings],
+    values,
+  }),
 }));
 
 jest.mock("@ever-hust/db", () => {
@@ -121,6 +134,11 @@ jest.mock("@ever-hust/db", () => {
           () => [],
         ),
     }),
+    execute: (query: MockSql) =>
+      settles(
+        () => ({ scope, op: "execute", table: "", query }),
+        () => [],
+      ),
   });
 
   return {
@@ -148,12 +166,16 @@ const run = (input: Record<string, unknown>) =>
     Record<string, unknown>
   >;
 
-/** The statements in order, e.g. "db select users" or "tx upsert user_jobs". */
+/** The statements in order, e.g. "db select users", "tx upsert user_jobs" or "tx advisory lock". */
 const statements = () =>
-  mockDb.calls.map(
-    (call) =>
-      `${call.scope} ${call.onConflictDoUpdate ? "upsert" : call.op} ${call.table}`,
-  );
+  mockDb.calls.map((call) => {
+    if (call.op === "execute") {
+      return call.query!.strings.join("?").includes("pg_advisory_xact_lock")
+        ? `${call.scope} advisory lock`
+        : `${call.scope} execute`;
+    }
+    return `${call.scope} ${call.onConflictDoUpdate ? "upsert" : call.op} ${call.table}`;
+  });
 
 describe("applyJobTool", () => {
   beforeEach(() => {
@@ -199,6 +221,7 @@ describe("applyJobTool", () => {
       expect(statements()).toEqual([
         "db select users",
         "db select jobs",
+        "tx advisory lock",
         "tx select applications",
         "tx insert agent_instances",
         "tx insert applications",
@@ -241,8 +264,34 @@ describe("applyJobTool", () => {
     expect(statements()).toEqual([
       "db select users",
       "db select jobs",
+      "tx advisory lock",
       "tx select applications",
     ]);
+  });
+
+  it("locks (user, job) inside the transaction before the duplicate check (T-2926)", async () => {
+    const result = await run({ userId: "u1", jobId: 7 });
+
+    expect(result).toMatchObject({ applied: true, applicationId: 42 });
+    // The duplicate check is a plain select, which does not block another apply under READ
+    // COMMITTED. Only a lock taken BEFORE it, in the same transaction, makes the second apply
+    // wait for the first to commit and then see its application.
+    const lockIndex = mockDb.calls.findIndex((call) => call.op === "execute");
+    const checkIndex = mockDb.calls.findIndex(
+      (call) => call.op === "select" && call.table === "applications",
+    );
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(lockIndex).toBeLessThan(checkIndex);
+
+    const lock = mockDb.calls[lockIndex]!;
+    // Transaction-scoped (released at commit or rollback), not a session lock left behind on a
+    // pooled connection.
+    expect(lock.scope).toBe("tx");
+    expect(lock.query!.strings.join("?")).toBe(
+      "select pg_advisory_xact_lock(hashtext('apply-job:' || ?), ?)",
+    );
+    // Keyed on the user AND the job: applies to other jobs do not wait on each other.
+    expect(lock.query!.values).toEqual(["u1", 7]);
   });
 
   it("refuses a user without Pro and opens no transaction", async () => {
