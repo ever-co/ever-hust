@@ -121,26 +121,19 @@ export const applyJobTool = tool({
         throw new Error("Failed to create application record");
       }
 
-      // Track in userJobs as "applied" (upsert: change existing favorited → applied)
-      const existingUserJob = await tx
-        .select({ id: userJobs.id })
-        .from(userJobs)
-        .where(and(eq(userJobs.userId, userId), eq(userJobs.jobId, jobId)))
-        .limit(1);
-
-      if (existingUserJob.length > 0) {
-        await tx
-          .update(userJobs)
-          .set({ status: "applied", appliedAt: new Date(), updatedAt: new Date() })
-          .where(eq(userJobs.id, existingUserJob[0]!.id));
-      } else {
-        await tx.insert(userJobs).values({
-          userId,
-          jobId,
-          status: "applied",
-          appliedAt: new Date(),
+      // Track in userJobs as "applied" in ONE upsert on (userId, jobId). A select followed by
+      // an update or an insert races the favorite toggles: an unfavorite that deletes the row
+      // after the select leaves the update with no row (the application commits, no row says
+      // "applied"), and a favorite inserted after it makes the insert hit user_jobs_unique and
+      // roll the whole application back. The upsert waits for the other writer instead.
+      const appliedAt = new Date();
+      await tx
+        .insert(userJobs)
+        .values({ userId, jobId, status: "applied", appliedAt })
+        .onConflictDoUpdate({
+          target: [userJobs.userId, userJobs.jobId],
+          set: { status: "applied", appliedAt, updatedAt: appliedAt },
         });
-      }
 
       return {
         duplicate: false as const,
