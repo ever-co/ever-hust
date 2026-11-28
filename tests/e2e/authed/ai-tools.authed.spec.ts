@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { skipIfProviderRateLimited } from "../helpers/live-llm";
 
 // Real-LLM E2E: exercises the orchestrator + tools end-to-end against a live model.
 // Gated on an LLM key so the suite stays green where no key is configured; lights up in CI
-// once OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) is set as a secret.
+// once OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) is set as a secret. A test whose model call the
+// provider rate-limited (e.g. OpenRouter's free-model daily cap) is skipped, not failed.
 const HAS_LLM = !!process.env.OPENROUTER_API_KEY || !!process.env.ANTHROPIC_API_KEY;
 
 test.use({ storageState: "tests/e2e/.auth/user.json" });
@@ -39,6 +41,7 @@ test.describe("AI tools — real LLM", () => {
     });
     expect(res.status()).toBe(200);
     const body = await res.text();
+    skipIfProviderRateLimited(body);
     expect(body.length).toBeGreaterThan(0);
     // The model should pick the searchJobs tool for a job-search request.
     expect(body).toContain("searchJobs");
@@ -65,6 +68,7 @@ test.describe("AI tools — real LLM", () => {
     });
     expect(res.status()).toBe(200);
     const body = await res.text();
+    skipIfProviderRateLimited(body);
     // The real model may call evaluateJob or answer conversationally — tool choice is
     // non-deterministic, so assert the orchestrator streamed a real SSE response rather than
     // requiring a specific tool. (searchJobs above covers deterministic tool invocation.)

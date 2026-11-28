@@ -4,7 +4,12 @@
  * @napi-rs/canvas to define DOMMatrix, the standalone image never had it, and
  * POST /api/cv/upload failed for every request.
  */
-import { extractTextFromPDF, parseCV } from "./index";
+import {
+  CvUnreadableError,
+  extractTextFromPDF,
+  isCvUnreadableError,
+  parseCV,
+} from "./index";
 import { makeTextPdf } from "./test-pdf";
 
 const CV_LINES = [
@@ -38,6 +43,44 @@ describe("extractTextFromPDF", () => {
     await expect(
       extractTextFromPDF(Buffer.from("not a pdf at all, just text")),
     ).rejects.toMatchObject({ message: expect.stringContaining("Invalid PDF") });
+  });
+
+  it("marks unreadable bytes as the file's fault (CvUnreadableError)", async () => {
+    const error = await extractTextFromPDF(
+      Buffer.from("not a pdf at all, just text"),
+    ).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(CvUnreadableError);
+    expect(isCvUnreadableError(error)).toBe(true);
+  });
+});
+
+describe("parseCV with a file it cannot read", () => {
+  it.each([
+    ["a PDF", "application/pdf"],
+    [
+      "a DOCX",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ],
+  ])("throws CvUnreadableError for bytes that are not %s", async (_label, type) => {
+    const error = await parseCV(
+      Buffer.from("plain text pretending to be a document"),
+      type,
+    ).catch((err: unknown) => err);
+    expect(isCvUnreadableError(error)).toBe(true);
+  });
+});
+
+describe("isCvUnreadableError", () => {
+  it("is false for any other error, so the route answers 5xx for it", () => {
+    expect(isCvUnreadableError(new Error("Cannot find module 'unpdf'"))).toBe(false);
+    expect(isCvUnreadableError("Unreadable")).toBe(false);
+    expect(isCvUnreadableError(null)).toBe(false);
+  });
+
+  it("is true for an error of that name from another copy of the module", () => {
+    const error = new Error("Unreadable PDF");
+    error.name = "CvUnreadableError";
+    expect(isCvUnreadableError(error)).toBe(true);
   });
 });
 
