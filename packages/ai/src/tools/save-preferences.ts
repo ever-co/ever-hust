@@ -81,13 +81,15 @@ export const savePreferencesTool = tool({
     if (!userId) return { saved: false, error: "Not authenticated" };
 
     try {
-    // Use a transaction to prevent concurrent preference updates from overwriting each other
+    // Read the row under FOR UPDATE in the transaction that writes it back, so a concurrent
+    // writer (a parallel tool call, a Settings save) cannot lose its keys to a stale copy.
     const merged = await db.transaction(async (tx) => {
       const existing = await tx
         .select({ preferences: users.preferences })
         .from(users)
         .where(eq(users.id, userId))
-        .limit(1);
+        .limit(1)
+        .for("update");
 
       const existingPrefs =
         (existing[0]?.preferences as Record<string, unknown>) ?? {};

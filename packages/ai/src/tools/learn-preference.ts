@@ -38,22 +38,30 @@ export const learnPreferenceTool = tool({
       };
     }
     try {
-      const rows = await db
-        .select({ preferences: users.preferences })
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-      if (rows.length === 0) return { updated: false, error: "User not found." };
+      // Read the row under FOR UPDATE in the transaction that writes it back: the AI SDK runs
+      // the tool calls of one step in parallel, and a concurrent writer must not lose its keys
+      // to a stale copy of the JSON.
+      const evaluationWeights = await db.transaction(async (tx) => {
+        const rows = await tx
+          .select({ preferences: users.preferences })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1)
+          .for("update");
+        if (rows.length === 0) return null;
 
-      const prefs = (rows[0]!.preferences ?? {}) as Record<string, unknown>;
-      const current = (prefs.evaluationWeights ?? {}) as Record<string, number>;
-      const evaluationWeights = reconcileWeights(current, valid);
-      const newPrefs = { ...prefs, evaluationWeights };
+        const prefs = (rows[0]!.preferences ?? {}) as Record<string, unknown>;
+        const current = (prefs.evaluationWeights ?? {}) as Record<string, number>;
+        const weights = reconcileWeights(current, valid);
+        const newPrefs = { ...prefs, evaluationWeights: weights };
 
-      await db
-        .update(users)
-        .set({ preferences: newPrefs, updatedAt: new Date() })
-        .where(eq(users.id, userId));
+        await tx
+          .update(users)
+          .set({ preferences: newPrefs, updatedAt: new Date() })
+          .where(eq(users.id, userId));
+        return weights;
+      });
+      if (!evaluationWeights) return { updated: false, error: "User not found." };
 
       return { updated: true, evaluationWeights };
     } catch (err) {
