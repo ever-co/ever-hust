@@ -21,6 +21,7 @@ import {
   apiError,
   safeJsonParse,
 } from "../../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../../lib/id-param";
 
 type RouteContext = { params: Promise<{ orgId: string }> };
 
@@ -40,8 +41,8 @@ export async function GET(
   context: RouteContext
 ) {
   const { orgId: orgIdStr } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
 
@@ -117,8 +118,8 @@ export async function POST(
   context: RouteContext
 ) {
   const { orgId: orgIdStr } = await context.params;
-  const orgId = Number(orgIdStr);
-  if (!Number.isInteger(orgId) || orgId <= 0) {
+  const orgId = parsePositiveIntId(orgIdStr);
+  if (orgId === null) {
     return apiBadRequest("Invalid organization ID");
   }
 

@@ -50,9 +50,17 @@ export function buildOpenApiSpec(origin: string) {
           tags: ["Jobs"],
           summary: "Get a job by id",
           operationId: "getJob",
-          parameters: [{ name: "jobId", in: "path", required: true, schema: { type: "integer" } }],
+          parameters: [
+            {
+              name: "jobId",
+              in: "path",
+              required: true,
+              schema: { type: "integer", minimum: 1, maximum: 2_147_483_647 },
+            },
+          ],
           responses: {
             "200": { description: "The job", content: { "application/json": { schema: { type: "object" } } } },
+            "400": { description: "jobId is not a whole number from 1 to 2147483647" },
             "401": { $ref: "#/components/responses/Unauthorized" },
             "404": { description: "Not found" },
           },

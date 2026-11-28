@@ -10,6 +10,7 @@ import {
   apiError,
   safeJsonParse,
 } from "../../../../lib/api-response";
+import { parsePositiveIntId } from "../../../../lib/id-param";
 
 // The apply tool marks a job's user_jobs row 'applied' with appliedAt; the profile's applied
 // list and the inbox job matching read it. Hiding must never overwrite it (and the unhide
@@ -117,9 +118,8 @@ export async function DELETE(req: Request) {
   if (rateLimited) return rateLimited;
 
   const url = new URL(req.url);
-  const rawJobId = url.searchParams.get("jobId");
-  const jobId = Number(rawJobId);
-  if (!rawJobId || !Number.isFinite(jobId) || jobId < 1) {
+  const jobId = parsePositiveIntId(url.searchParams.get("jobId"));
+  if (jobId === null) {
     return apiBadRequest("Invalid or missing jobId query parameter");
   }
 
