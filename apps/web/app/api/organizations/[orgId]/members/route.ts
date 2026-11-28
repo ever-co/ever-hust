@@ -5,6 +5,11 @@ import {
   organizations,
   users,
 } from "@ever-hust/db/schema";
+import {
+  getAppUrl,
+  isDeduplicatedEmail,
+  sendOrganizationInvitationEmail,
+} from "@ever-hust/email";
 import { eq, and, count, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { requireOrgMember, requireOrgRole } from "../../../../../lib/auth-org";
@@ -18,6 +23,16 @@ import {
 } from "../../../../../lib/api-response";
 
 type RouteContext = { params: Promise<{ orgId: string }> };
+
+/** Longest inviter name the invitation email prints. */
+const INVITER_NAME_MAX_LENGTH = 100;
+
+/** The inviter as the email names them: the trimmed name, or the email's local part. */
+function inviterDisplayName(user: { name?: string | null; email: string }): string {
+  const name = user.name?.trim() || user.email.split("@")[0]?.trim() || "A teammate";
+  // Cap by code point so an emoji or other astral character is never cut in half.
+  return Array.from(name).slice(0, INVITER_NAME_MAX_LENGTH).join("").trimEnd();
+}
 
 // GET /api/organizations/[orgId]/members - List org members
 export async function GET(
@@ -133,7 +148,7 @@ export async function POST(
   try {
     // Check org member limit
     const [org] = await db
-      .select({ maxMembers: organizations.maxMembers })
+      .select({ name: organizations.name, maxMembers: organizations.maxMembers })
       .from(organizations)
       .where(eq(organizations.id, orgId))
       .limit(1);
@@ -217,7 +232,37 @@ export async function POST(
       return apiError("Failed to create invitation");
     }
 
-    return apiSuccess({ invitation }, { status: 201 });
+    // The invitee opens this page, signed in with the invited address, to join. The token is the
+    // secret: the URL goes to the invitee and back to the owner/admin who invited, never to a log.
+    const inviteUrl = `${getAppUrl()}/organizations/invitations/${token}`;
+
+    // A guest (anonymous trial user) has no verified address, so we do not send mail on their
+    // behalf from our own sender; they get the link to share themselves.
+    let emailSent = false;
+    if (memberInfo.user.emailVerified === true) {
+      try {
+        const result = await sendOrganizationInvitationEmail({
+          to: invitation.email,
+          orgName: org.name,
+          inviterName: inviterDisplayName(memberInfo.user),
+          role: invitation.role,
+          acceptUrl: inviteUrl,
+          invitationId: invitation.id,
+          invitedAt: invitation.createdAt,
+        });
+        // `in_flight`: an earlier attempt with this key is still running, so delivery is unknown.
+        emailSent = !isDeduplicatedEmail(result) || result.reason === "replayed";
+      } catch (err) {
+        // The invitation stands: the owner/admin gets the link to share instead.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[api/organizations/[orgId]/members] invitation ${invitation.id} email failed:`,
+          message.split(token).join("[token]")
+        );
+      }
+    }
+
+    return apiSuccess({ invitation, emailSent, inviteUrl }, { status: 201 });
   } catch (err) {
     console.error(
       "[api/organizations/[orgId]/members] POST failed:",
